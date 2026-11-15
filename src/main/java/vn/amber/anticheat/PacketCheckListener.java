@@ -15,7 +15,6 @@ import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPa
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfoRemove;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSoundEffect;
 import org.bukkit.Bukkit;
-import org.bukkit.GameMode;
 import org.bukkit.entity.Player;
 
 import java.util.ArrayList;
@@ -31,9 +30,6 @@ public class PacketCheckListener implements PacketListener {
 
     private final Map<UUID, Long> timerWindowStart = new ConcurrentHashMap<>();
     private final Map<UUID, Integer> timerPacketCount = new ConcurrentHashMap<>();
-    private final Map<UUID, Float> lastPitchMap = new ConcurrentHashMap<>();
-    private final Map<UUID, Float> lastDeltaPitchMap = new ConcurrentHashMap<>();
-    private final Map<UUID, Integer> gcdStreakMap = new ConcurrentHashMap<>();
 
     private final Map<UUID, Long> pendingVelocityTime = new ConcurrentHashMap<>();
     private final Map<UUID, Double> velocityStartY = new ConcurrentHashMap<>();
@@ -47,19 +43,39 @@ public class PacketCheckListener implements PacketListener {
     public void clearPlayerData(UUID uuid) {
         timerWindowStart.remove(uuid);
         timerPacketCount.remove(uuid);
-        lastPitchMap.remove(uuid);
-        lastDeltaPitchMap.remove(uuid);
-        gcdStreakMap.remove(uuid);
         pendingVelocityTime.remove(uuid);
         velocityStartY.remove(uuid);
         velocityFailStreak.remove(uuid);
     }
 
+    private Player resolvePlayer(PacketSendEvent event) {
+        if (event.getPlayer() instanceof Player p) return p;
+        if (event.getUser() != null && event.getUser().getUUID() != null) {
+            return Bukkit.getPlayer(event.getUser().getUUID());
+        }
+        return null;
+    }
+
     @Override
     public void onPacketSend(PacketSendEvent event) {
-        if (!(event.getPlayer() instanceof Player player)) return;
+        Player player = resolvePlayer(event);
 
-        // 1. Giữ nguyên tên trên bảng Tab khi ẩn mô hình 3D bằng Anti-PlayerESP
+        // 1. Gói CHUNK_DATA: Áp dụng cho TẤT CẢ (Kể cả OP và Creative cũng không thể bypass Anti-ESP/Xray)
+        if (event.getPacketType() == PacketType.Play.Server.CHUNK_DATA) {
+            if (antiXrayManager != null) {
+                try {
+                    WrapperPlayServerChunkData chunkData = new WrapperPlayServerChunkData(event);
+                    if (antiXrayManager.obfuscateChunkPacket(player, chunkData)) {
+                        event.markForReEncode(true);
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+            return;
+        }
+
+        if (player == null) return;
+
         if (event.getPacketType() == PacketType.Play.Server.PLAYER_INFO_REMOVE) {
             WrapperPlayServerPlayerInfoRemove removePacket = new WrapperPlayServerPlayerInfoRemove(event);
             List<UUID> uuids = new ArrayList<>(removePacket.getProfileIds());
@@ -78,28 +94,21 @@ public class PacketCheckListener implements PacketListener {
             return;
         }
 
-        boolean bypassVisuals = player.hasPermission("amberac.bypass")
-                || player.getGameMode() == GameMode.SPECTATOR
-                || player.getGameMode() == GameMode.CREATIVE;
-
-        // 2. Chặn gói NBT của TileEntity khác tầng Y (Chống lộ căn cứ qua Shift+F3 Pie-Chart)
+        // 2. Chặn gói dữ liệu TileEntity, Âm thanh, Hạt khác tầng Y cho TẤT CẢ mọi người (OP & Creative đều bị chặn)
         if (event.getPacketType() == PacketType.Play.Server.BLOCK_ENTITY_DATA) {
-            if (!bypassVisuals
-                    && plugin.getConfig().getBoolean("hien-tren-an-duoi.bat", true)
-                    && plugin.getConfig().getBoolean("hien-tren-an-duoi.chong-pie-chart-f3", true)) {
-                WrapperPlayServerBlockEntityData bePacket = new WrapperPlayServerBlockEntityData(event);
-                int blockY = bePacket.getPosition().getY();
-                if (plugin.isHiddenByYLayer(player, blockY, false)) {
-                    event.setCancelled(true);
-                }
+            WrapperPlayServerBlockEntityData bePacket = new WrapperPlayServerBlockEntityData(event);
+            int bx = bePacket.getPosition().getX();
+            int by = bePacket.getPosition().getY();
+            int bz = bePacket.getPosition().getZ();
+            if (plugin.isHiddenByYLayer(player, by, false)
+                    || player.getLocation().distanceSquared(new org.bukkit.Location(player.getWorld(), bx, by, bz)) > 256.0) {
+                event.setCancelled(true);
             }
             return;
         }
 
-        // 3. Chặn âm thanh phát ra từ tầng bị ẩn (Chống SoundESP)
         if (event.getPacketType() == PacketType.Play.Server.SOUND_EFFECT) {
-            if (!bypassVisuals
-                    && plugin.getConfig().getBoolean("hien-tren-an-duoi.bat", true)
+            if (plugin.getConfig().getBoolean("hien-tren-an-duoi.bat", true)
                     && plugin.getConfig().getBoolean("hien-tren-an-duoi.chan-am-thanh-khac-tang", true)) {
                 WrapperPlayServerSoundEffect soundPacket = new WrapperPlayServerSoundEffect(event);
                 double soundY = soundPacket.getEffectPosition().getY() / 8.0;
@@ -110,9 +119,8 @@ public class PacketCheckListener implements PacketListener {
             return;
         }
 
-        // 4. Chặn hạt hiệu ứng (Particle) phát ra từ tầng bị ẩn
         if (event.getPacketType() == PacketType.Play.Server.PARTICLE) {
-            if (!bypassVisuals && plugin.getConfig().getBoolean("hien-tren-an-duoi.bat", true)) {
+            if (plugin.getConfig().getBoolean("hien-tren-an-duoi.bat", true)) {
                 WrapperPlayServerParticle particlePacket = new WrapperPlayServerParticle(event);
                 double particleY = particlePacket.getPosition().getY();
                 if (plugin.isHiddenByYLayer(player, particleY, false)) {
@@ -122,7 +130,6 @@ public class PacketCheckListener implements PacketListener {
             return;
         }
 
-        // 5. Ghi nhận thời điểm gửi gói đẩy lùi (Velocity) để bắt Anti-Knockback
         if (event.getPacketType() == PacketType.Play.Server.ENTITY_VELOCITY) {
             WrapperPlayServerEntityVelocity vel = new WrapperPlayServerEntityVelocity(event);
             if (vel.getEntityId() == player.getEntityId() && vel.getVelocity().getY() > 0.25) {
@@ -130,42 +137,36 @@ public class PacketCheckListener implements PacketListener {
                 pendingVelocityTime.put(uuid, System.currentTimeMillis());
                 velocityStartY.put(uuid, player.getLocation().getY());
             }
-            return;
-        }
-
-        // 6. Xử lý gói CHUNK_DATA (Anti-Xray 1 Mode + Khóa Rương/Máy móc thành Đá)
-        if (event.getPacketType() == PacketType.Play.Server.CHUNK_DATA) {
-            if (!bypassVisuals && antiXrayManager != null) {
-                try {
-                    WrapperPlayServerChunkData chunkData = new WrapperPlayServerChunkData(event);
-                    if (antiXrayManager.obfuscateChunkPacket(player, chunkData)) {
-                        event.markForReEncode(true);
-                    }
-                } catch (Exception ignored) {
-                }
-            }
         }
     }
 
     @Override
     public void onPacketReceive(PacketReceiveEvent event) {
         if (!(event.getPlayer() instanceof Player player)) return;
-        if (!plugin.getConfig().getBoolean("he-thong.anticheat", true)) return;
-        if (player.hasPermission("amberac.bypass")) return;
-
         UUID uuid = player.getUniqueId();
-        if (plugin.getSuspectGuiManager() != null && plugin.getSuspectGuiManager().isFrozen(uuid)) {
-            return;
-        }
 
         if (WrapperPlayClientPlayerFlying.isFlying(event.getPacketType())) {
+            plugin.updateFlyingPacketTime(uuid);
+
+            if (!plugin.getConfig().getBoolean("he-thong.anticheat", true)) return;
+            // OP và Sáng tạo được miễn trừ hoàn toàn các kiểm tra Cheat di chuyển / góc nhìn
+            if (plugin.isExemptFromAnticheat(player)) return;
+            if (plugin.getSuspectGuiManager() != null && plugin.getSuspectGuiManager().isFrozen(uuid)) {
+                return;
+            }
+
             long now = System.currentTimeMillis();
 
-            // 1. Check Timer (Tua nhanh tốc độ game)
+            // 1. Check Timer
             long start = timerWindowStart.computeIfAbsent(uuid, k -> now);
             int count = timerPacketCount.merge(uuid, 1, Integer::sum);
+            int maxPackets = plugin.getConfig().getInt("checks.movement.timer-max-packets-per-sec", 25);
+
+            if (count > maxPackets && !player.isInsideVehicle() && !player.isGliding()) {
+                event.setCancelled(true);
+            }
+
             if (now - start >= 1000L) {
-                int maxPackets = plugin.getConfig().getInt("checks.movement.timer-max-packets-per-sec", 26);
                 if (count > maxPackets && !player.isInsideVehicle() && !player.isGliding()) {
                     int finalCount = count;
                     Bukkit.getScheduler().runTask(plugin, () ->
@@ -203,7 +204,7 @@ public class PacketCheckListener implements PacketListener {
                 }
             }
 
-            // 3. Check Aim-GCD (Aimbot khóa tâm)
+            // 3. Check Invalid Pitch
             float pitch = Float.NaN;
             if (event.getPacketType() == PacketType.Play.Client.PLAYER_ROTATION) {
                 pitch = new WrapperPlayClientPlayerRotation(event).getPitch();
@@ -211,39 +212,12 @@ public class PacketCheckListener implements PacketListener {
                 pitch = new WrapperPlayClientPlayerPositionAndRotation(event).getPitch();
             }
 
-            if (!Float.isNaN(pitch) && Math.abs(pitch) < 89.0f) {
-                Float prevPitch = lastPitchMap.put(uuid, pitch);
-                if (prevPitch != null) {
-                    float deltaPitch = Math.abs(pitch - prevPitch);
-                    if (deltaPitch > 0.5f && deltaPitch < 25.0f) {
-                        Float prevDelta = lastDeltaPitchMap.put(uuid, deltaPitch);
-                        if (prevDelta != null) {
-                            long expandedCurr = (long) (deltaPitch * 16777216.0f);
-                            long expandedPrev = (long) (prevDelta * 16777216.0f);
-                            long gcd = computeGcd(expandedCurr, expandedPrev);
-                            if (gcd > 0 && gcd < 131072L) {
-                                int streak = gcdStreakMap.merge(uuid, 1, Integer::sum);
-                                if (streak >= 14) {
-                                    gcdStreakMap.put(uuid, 0);
-                                    Bukkit.getScheduler().runTask(plugin, () ->
-                                            plugin.flag(player, "AIM-GCD", "Khóa tâm bất thường"));
-                                }
-                            } else {
-                                gcdStreakMap.computeIfPresent(uuid, (k, v) -> v > 0 ? v - 1 : 0);
-                            }
-                        }
-                    }
-                }
+            if (!Float.isNaN(pitch) && Math.abs(pitch) > 90.05f) {
+                event.setCancelled(true);
+                float finalPitch = pitch;
+                Bukkit.getScheduler().runTask(plugin, () ->
+                        plugin.flag(player, "INVALID-ROTATION", String.format("Góc nhìn bất hợp lệ: %.1f°", finalPitch)));
             }
         }
-    }
-
-    private long computeGcd(long a, long b) {
-        while (b != 0) {
-            long t = b;
-            b = a % b;
-            a = t;
-        }
-        return a;
     }
 }
