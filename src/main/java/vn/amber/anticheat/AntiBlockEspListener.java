@@ -3,6 +3,7 @@ package vn.amber.anticheat;
 import org.bukkit.Bukkit;
 import org.bukkit.Chunk;
 import org.bukkit.FluidCollisionMode;
+import org.bukkit.GameMode;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.World;
@@ -10,6 +11,7 @@ import org.bukkit.block.Block;
 import org.bukkit.block.BlockState;
 import org.bukkit.block.data.BlockData;
 import org.bukkit.entity.Entity;
+import org.bukkit.entity.Item;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
@@ -24,7 +26,10 @@ import org.bukkit.event.world.ChunkUnloadEvent;
 import org.bukkit.util.RayTraceResult;
 import org.bukkit.util.Vector;
 
-import java.util.*;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class AntiBlockEspListener implements Listener {
@@ -60,7 +65,7 @@ public class AntiBlockEspListener implements Listener {
     }
 
     public void startTask() {
-        Bukkit.getScheduler().runTaskTimer(plugin, this::updateBlocksForAll, 20L, 6L);
+        Bukkit.getScheduler().runTaskTimer(plugin, this::updateBlocksForAll, 20L, 5L);
     }
 
     private boolean isTargetMaterial(Material mat) {
@@ -69,7 +74,8 @@ public class AntiBlockEspListener implements Listener {
         if (name.contains("CHEST") || name.endsWith("SHULKER_BOX") || name.endsWith("_BED") || name.endsWith("_SIGN")) {
             return true;
         }
-        if (name.equals("BARREL") || name.equals("SPAWNER") || name.equals("HOPPER")
+        if (name.equals("BARREL") || name.equals("SPAWNER") || name.equals("TRIAL_SPAWNER")
+                || name.equals("VAULT") || name.equals("HOPPER")
                 || name.equals("FURNACE") || name.equals("BLAST_FURNACE")
                 || name.equals("SMOKER") || name.equals("DISPENSER") || name.equals("DROPPER")
                 || name.equals("BREWING_STAND") || name.equals("ENCHANTING_TABLE")
@@ -131,7 +137,7 @@ public class AntiBlockEspListener implements Listener {
             if (!isTargetMaterial(b.getType())) return;
             Location loc = b.getLocation();
             for (Player p : w.getPlayers()) {
-                if (p.equals(e.getPlayer())) continue;
+                if (p.equals(e.getPlayer()) || p.getGameMode() == GameMode.SPECTATOR) continue;
                 Set<BlockPos> rev = revealedBlocksByPlayer.get(p.getUniqueId());
                 if (rev == null || !rev.contains(pos)) {
                     boolean diffLayer = plugin.isHiddenByYLayer(p, b.getY(), false);
@@ -209,9 +215,6 @@ public class AntiBlockEspListener implements Listener {
         return false;
     }
 
-    /**
-     * Áp dụng cho TẤT CẢ người chơi (Bao gồm cả OP và Creative)
-     */
     private void updateBlocksForAll() {
         boolean wallBlockEsp = plugin.getConfig().getBoolean("anti-block-esp.bat", true);
         boolean layerBlockEsp = plugin.getConfig().getBoolean("hien-tren-an-duoi.bat", true)
@@ -228,6 +231,11 @@ public class AntiBlockEspListener implements Listener {
             World world = viewer.getWorld();
             if (world.getEnvironment() == World.Environment.THE_END) continue;
 
+            if (viewer.getGameMode() == GameMode.SPECTATOR) {
+                revealNearbyForBypass(viewer);
+                continue;
+            }
+
             UUID viewerId = viewer.getUniqueId();
             Set<BlockPos> revealedSet = revealedBlocksByPlayer.computeIfAbsent(viewerId, k -> ConcurrentHashMap.newKeySet());
             Set<BlockPos> maskedSet = maskedBlocksByPlayer.computeIfAbsent(viewerId, k -> ConcurrentHashMap.newKeySet());
@@ -235,6 +243,7 @@ public class AntiBlockEspListener implements Listener {
             double eyeX = eye.getX(), eyeY = eye.getY(), eyeZ = eye.getZ();
             String worldName = world.getName();
 
+            // 1. RƯƠNG, SPAWNER, SHULKER, PHỄU...: Ẩn cả khi ở xa (> 20m) LẪN khi khuất sau tường
             Map<Long, Set<BlockPos>> worldMap = trackedBlocks.get(worldName);
             if (worldMap != null && !worldMap.isEmpty()) {
                 int pChunkX = eye.getBlockX() >> 4;
@@ -310,10 +319,15 @@ public class AntiBlockEspListener implements Listener {
                 }
             }
 
+            // 2. CẬP NHẬT THỰC THỂ (Tách riêng Item Drop không ẩn sau tường)
             updateBaseEntitiesForViewer(viewer, wallBlockEsp, layerBlockEsp);
         }
     }
 
+    /**
+     * - Nếu là ITEM DROP (ent instanceof Item): KHÔNG ẩn sau block, chỉ ẩn khi đi ra xa (> 20m) hoặc khác tầng Y=35. Lại gần là hiện!
+     * - Các thực thể khác (ArmorStand, ItemFrame, Xe mỏ, Quái...): Vẫn ẩn cả sau tường lẫn khi ở xa.
+     */
     private void updateBaseEntitiesForViewer(Player viewer, boolean wallEsp, boolean layerEsp) {
         World world = viewer.getWorld();
         Location eye = viewer.getEyeLocation();
@@ -336,8 +350,10 @@ public class AntiBlockEspListener implements Listener {
                     } else if (wallEsp) {
                         double distSq = eye.distanceSquared(entLoc);
                         if (distSq > MAX_REVEAL_DIST_SQ) {
+                            // Ở xa (> 20m): Ẩn tất cả (bao gồm cả Item Drop)
                             shouldHide = true;
-                        } else if (distSq > 9.0 && !viewer.hasLineOfSight(ent)) {
+                        } else if (!(ent instanceof Item) && distSq > 9.0 && !viewer.hasLineOfSight(ent)) {
+                            // Ở gần (<= 20m) nhưng khuất sau tường: Chỉ ẩn Thực thể khác, KHÔNG ẩn Item Drop!
                             shouldHide = true;
                         }
                     }
