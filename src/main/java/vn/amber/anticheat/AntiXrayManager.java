@@ -1,11 +1,12 @@
 package vn.amber.anticheat;
 
+import com.github.retrooper.packetevents.protocol.nbt.NBTCompound;
 import com.github.retrooper.packetevents.protocol.world.chunk.BaseChunk;
 import com.github.retrooper.packetevents.protocol.world.chunk.Column;
+import com.github.retrooper.packetevents.protocol.world.chunk.TileEntity;
 import com.github.retrooper.packetevents.protocol.world.states.WrappedBlockState;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerChunkData;
 import io.github.retrooper.packetevents.util.SpigotConversionUtil;
-import org.bukkit.GameMode;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.World;
@@ -20,22 +21,35 @@ import org.bukkit.event.block.BlockExplodeEvent;
 import org.bukkit.event.entity.EntityExplodeEvent;
 
 import java.util.Arrays;
-import java.util.List;
+import java.util.HashSet;
+import java.util.Locale;
+import java.util.Set;
 
 public class AntiXrayManager implements Listener {
 
     private final AmberAntiCheat plugin;
 
     private static final int MAX_STATE_ID = 65536;
-    private volatile boolean[] transparentTable = new boolean[MAX_STATE_ID];
-    private volatile boolean[] overworldOreTable = new boolean[MAX_STATE_ID];
-    private volatile boolean[] netherOreTable = new boolean[MAX_STATE_ID];
-    private volatile boolean[] storageBlockTable = new boolean[MAX_STATE_ID];
+    private static final byte CAT_UNKNOWN = -1;
+    private static final byte CAT_NORMAL_SOLID = 0;
+    private static final byte CAT_TRANSPARENT = 1;
+    private static final byte CAT_STORAGE_HIDE = 2;
+    private static final byte CAT_OW_ORE = 4;
+    private static final byte CAT_NETHER_ORE = 8;
+
+    private volatile byte[] stateCategoryCache = new byte[MAX_STATE_ID];
     private volatile boolean[] oreMaterialTable = new boolean[Material.values().length];
 
+    private Set<String> owOreNames = new HashSet<>();
+    private Set<String> netherOreNames = new HashSet<>();
+    private Set<String> storageBlockNames = new HashSet<>();
+
+    private volatile int airId = 0;
     private volatile int stoneId;
     private volatile int deepslateId;
     private volatile int netherrackId;
+
+    private static final TileEntity[] EMPTY_TILE_ENTITIES = new TileEntity[0];
 
     private static final int[][] ADJACENT_OFFSETS = {
             {1, 0, 0}, {-1, 0, 0},
@@ -49,58 +63,49 @@ public class AntiXrayManager implements Listener {
     }
 
     public void reloadStateMappings() {
-        boolean[] newTransparent = new boolean[MAX_STATE_ID];
-        boolean[] newOwOres = new boolean[MAX_STATE_ID];
-        boolean[] newNetherOres = new boolean[MAX_STATE_ID];
-        boolean[] newStorage = new boolean[MAX_STATE_ID];
+        byte[] newCache = new byte[MAX_STATE_ID];
+        Arrays.fill(newCache, CAT_UNKNOWN);
         boolean[] newOreMat = new boolean[Material.values().length];
 
+        airId = getGlobalId(Material.AIR);
         stoneId = getGlobalId(Material.STONE);
         deepslateId = getGlobalId(Material.DEEPSLATE);
         netherrackId = getGlobalId(Material.NETHERRACK);
 
-        List<String> owList = plugin.getConfig().getStringList("anti-xray.quang-overworld");
-        List<String> netherList = plugin.getConfig().getStringList("anti-xray.quang-nether");
-        List<String> blockEspList = plugin.getConfig().getStringList("anti-block-esp.danh-sach-block");
+        Set<String> newOw = new HashSet<>();
+        for (String s : plugin.getConfig().getStringList("anti-xray.quang-overworld")) {
+            newOw.add(s.toUpperCase(Locale.ROOT));
+        }
 
-        List<String> pieChartExtras = Arrays.asList(
+        Set<String> newNether = new HashSet<>();
+        for (String s : plugin.getConfig().getStringList("anti-xray.quang-nether")) {
+            newNether.add(s.toUpperCase(Locale.ROOT));
+        }
+
+        Set<String> newStorage = new HashSet<>();
+        for (String s : plugin.getConfig().getStringList("anti-block-esp.danh-sach-block")) {
+            newStorage.add(s.toUpperCase(Locale.ROOT));
+        }
+        newStorage.addAll(Arrays.asList(
+                "CHEST", "TRAPPED_CHEST", "ENDER_CHEST", "BARREL", "SPAWNER", "TRIAL_SPAWNER", "VAULT",
                 "HOPPER", "FURNACE", "BLAST_FURNACE", "SMOKER", "DISPENSER", "DROPPER",
                 "PISTON", "STICKY_PISTON", "MOVING_PISTON", "BEACON", "BREWING_STAND",
                 "ENCHANTING_TABLE", "BELL", "CRAFTER", "DECORATED_POT", "LECTERN",
-                "ANVIL", "CHIPPED_ANVIL", "DAMAGED_ANVIL"
-        );
+                "ANVIL", "CHIPPED_ANVIL", "DAMAGED_ANVIL", "JUKEBOX", "CHISELED_BOOKSHELF"
+        ));
 
         for (Material mat : Material.values()) {
-            if (!mat.isBlock()) continue;
-            int id = getGlobalId(mat);
-            if (id < 0 || id >= MAX_STATE_ID) continue;
-
-            if (mat.isAir() || !plugin.isFullSolidBlock(mat)) {
-                newTransparent[id] = true;
-            }
-
             String name = mat.name();
-            boolean isOw = owList.contains(name);
-            boolean isNether = netherList.contains(name);
-            boolean isStorageOrTile = name.endsWith("SHULKER_BOX")
-                    || blockEspList.contains(name)
-                    || pieChartExtras.contains(name)
-                    || name.endsWith("_BED")
-                    || name.endsWith("_SIGN");
-
-            if (isOw) newOwOres[id] = true;
-            if (isNether) newNetherOres[id] = true;
-            if (isStorageOrTile) newStorage[id] = true;
-            if (isOw || isNether) {
+            if (newOw.contains(name) || newNether.contains(name)) {
                 newOreMat[mat.ordinal()] = true;
             }
         }
 
-        this.transparentTable = newTransparent;
-        this.overworldOreTable = newOwOres;
-        this.netherOreTable = newNetherOres;
-        this.storageBlockTable = newStorage;
+        this.owOreNames = newOw;
+        this.netherOreNames = newNether;
+        this.storageBlockNames = newStorage;
         this.oreMaterialTable = newOreMat;
+        this.stateCategoryCache = newCache;
     }
 
     private int getGlobalId(Material mat) {
@@ -111,21 +116,57 @@ public class AntiXrayManager implements Listener {
         }
     }
 
-    private int getBlockStateId(BaseChunk section, int x, int y, int z) {
-        WrappedBlockState state = section.get(x, y, z);
-        return state != null ? state.getGlobalId() : 0;
-    }
+    private byte getCategory(WrappedBlockState state) {
+        if (state == null) return CAT_TRANSPARENT;
+        int id = state.getGlobalId();
+        if (id <= 0 || id >= MAX_STATE_ID) return CAT_TRANSPARENT;
 
-    public boolean obfuscateChunkPacket(Player player, WrapperPlayServerChunkData wrapper) {
-        if (player == null) return false;
-        GameMode gm = player.getGameMode();
-        if (gm == GameMode.SPECTATOR || gm == GameMode.CREATIVE || player.hasPermission("amberac.bypass")) {
-            return false;
+        byte cached = stateCategoryCache[id];
+        if (cached != CAT_UNKNOWN) return cached;
+
+        String rawName = state.getType().getName().toUpperCase(Locale.ROOT);
+        int colonIdx = rawName.indexOf(':');
+        String typeName = (colonIdx != -1) ? rawName.substring(colonIdx + 1) : rawName;
+
+        Material mat = Material.getMaterial(typeName);
+        byte result = CAT_NORMAL_SOLID;
+
+        if (mat == null || mat.isAir() || !plugin.isFullSolidBlock(mat)) {
+            result |= CAT_TRANSPARENT;
         }
 
-        World world = player.getWorld();
-        World.Environment env = world.getEnvironment();
-        if (env == World.Environment.THE_END) return false;
+        if (storageBlockNames.contains(typeName)
+                || typeName.contains("CHEST")
+                || typeName.endsWith("SHULKER_BOX")
+                || typeName.endsWith("_BED")
+                || typeName.endsWith("_SIGN")
+                || typeName.endsWith("_HEAD")
+                || typeName.endsWith("_SKULL")
+                || typeName.endsWith("_BANNER")) {
+            result |= CAT_STORAGE_HIDE;
+        } else if (owOreNames.contains(typeName)) {
+            result |= CAT_OW_ORE;
+        } else if (netherOreNames.contains(typeName)) {
+            result |= CAT_NETHER_ORE;
+        }
+
+        stateCategoryCache[id] = result;
+        return result;
+    }
+
+    /**
+     * Áp dụng cho TẤT CẢ người chơi (Bao gồm cả OP và Creative)
+     */
+    public boolean obfuscateChunkPacket(Player player, WrapperPlayServerChunkData wrapper) {
+        boolean isNether = false;
+        int minY = -64;
+        if (player != null) {
+            World world = player.getWorld();
+            World.Environment env = world.getEnvironment();
+            if (env == World.Environment.THE_END) return false;
+            isNether = (env == World.Environment.NETHER);
+            minY = world.getMinHeight();
+        }
 
         boolean xrayEnabled = plugin.getConfig().getBoolean("anti-xray.bat", true);
         boolean hideStorageOnChunk = plugin.getConfig().getBoolean("anti-block-esp.bat", true);
@@ -134,23 +175,44 @@ public class AntiXrayManager implements Listener {
 
         if (!xrayEnabled && !hideStorageOnChunk && !layerEnabled) return false;
 
-        int maxScanY = plugin.getConfig().getInt("anti-xray.do-cao-quet-toi-da", 64);
-
         Column column = wrapper.getColumn();
+        if (column == null) return false;
         BaseChunk[] sections = column.getChunks();
         if (sections == null || sections.length == 0) return false;
 
-        int minY = world.getMinHeight();
-        boolean isNether = (env == World.Environment.NETHER);
-        boolean[] oreTable = isNether ? netherOreTable : overworldOreTable;
         boolean modified = false;
+
+        if (hideStorageOnChunk || pieChartProtect) {
+            TileEntity[] tiles = column.getTileEntities();
+            if (tiles != null && tiles.length > 0) {
+                TileEntity dummy = new TileEntity(0, -2048, 0, 0, new NBTCompound());
+                Arrays.fill(tiles, dummy);
+                try {
+                    Column cleanColumn = new Column(
+                            column.getX(),
+                            column.getZ(),
+                            column.isFullChunk(),
+                            sections,
+                            EMPTY_TILE_ENTITIES,
+                            column.getHeightMaps(),
+                            column.getBiomeDataBytes()
+                    );
+                    wrapper.setColumn(cleanColumn);
+                } catch (Throwable ignored) {
+                }
+                modified = true;
+            }
+        }
+
+        byte targetOreBit = isNether ? CAT_NETHER_ORE : CAT_OW_ORE;
+        int maxScanY = plugin.getConfig().getInt("anti-xray.do-cao-quet-toi-da", 64);
+        int splitY = plugin.getConfig().getInt("hien-tren-an-duoi.moc-do-cao-y", 35);
+        int viewerZone = (player != null) ? plugin.getPlayerZone(player) : 1;
 
         long[] transparentMask = new long[64];
 
         for (int secIdx = 0; secIdx < sections.length; secIdx++) {
             int sectionBaseY = minY + (secIdx << 4);
-            if (sectionBaseY > maxScanY && !hideStorageOnChunk && !pieChartProtect) break;
-
             BaseChunk section = sections[secIdx];
             if (section == null || section.isEmpty()) continue;
 
@@ -158,24 +220,37 @@ public class AntiXrayManager implements Listener {
 
             for (int y = 0; y < 16; y++) {
                 int worldY = sectionBaseY + y;
-                boolean scanOreHere = xrayEnabled && worldY <= maxScanY;
 
+                if (layerEnabled && !isNether) {
+                    if ((viewerZone == 1 && worldY <= splitY - 1) || (viewerZone == -1 && worldY >= splitY + 1)) {
+                        for (int z = 0; z < 16; z++) {
+                            for (int x = 0; x < 16; x++) {
+                                section.set(x, y, z, airId);
+                            }
+                        }
+                        modified = true;
+                        continue;
+                    }
+                }
+
+                boolean scanOreHere = xrayEnabled && worldY <= maxScanY;
                 if (!scanOreHere && !hideStorageOnChunk && !pieChartProtect) continue;
 
                 int defaultMaskId = isNether ? netherrackId : (worldY < 0 ? deepslateId : stoneId);
 
                 for (int z = 0; z < 16; z++) {
                     for (int x = 0; x < 16; x++) {
-                        int currentId = getBlockStateId(section, x, y, z);
-                        if (currentId <= 0 || currentId >= MAX_STATE_ID) continue;
+                        WrappedBlockState state = section.get(x, y, z);
+                        byte cat = getCategory(state);
+                        if (cat == CAT_NORMAL_SOLID || cat == CAT_TRANSPARENT) continue;
 
-                        if ((hideStorageOnChunk || pieChartProtect) && storageBlockTable[currentId]) {
+                        if ((hideStorageOnChunk || pieChartProtect) && (cat & CAT_STORAGE_HIDE) != 0) {
                             section.set(x, y, z, defaultMaskId);
                             modified = true;
                             continue;
                         }
 
-                        if (scanOreHere && oreTable[currentId]) {
+                        if (scanOreHere && (cat & targetOreBit) != 0) {
                             if (!maskBuilt) {
                                 buildTransparentMask(section, transparentMask);
                                 maskBuilt = true;
@@ -195,14 +270,13 @@ public class AntiXrayManager implements Listener {
 
     private void buildTransparentMask(BaseChunk section, long[] mask) {
         Arrays.fill(mask, 0L);
-        boolean[] trans = this.transparentTable;
         for (int y = 0; y < 16; y++) {
             int yOff = y << 8;
             for (int z = 0; z < 16; z++) {
                 int zOff = yOff | (z << 4);
                 for (int x = 0; x < 16; x++) {
-                    int id = getBlockStateId(section, x, y, z);
-                    if (id >= 0 && id < MAX_STATE_ID && trans[id]) {
+                    byte cat = getCategory(section.get(x, y, z));
+                    if ((cat & CAT_TRANSPARENT) != 0) {
                         int idx = zOff | x;
                         mask[idx >> 6] |= (1L << (idx & 63));
                     }
@@ -224,8 +298,7 @@ public class AntiXrayManager implements Listener {
         } else if (secIdx > 0) {
             BaseChunk below = sections[secIdx - 1];
             if (below == null || below.isEmpty()) return true;
-            int id = getBlockStateId(below, x, 15, z);
-            if (id >= 0 && id < MAX_STATE_ID && transparentTable[id]) return true;
+            if ((getCategory(below.get(x, 15, z)) & CAT_TRANSPARENT) != 0) return true;
         }
 
         if (y < 15) {
@@ -233,8 +306,7 @@ public class AntiXrayManager implements Listener {
         } else if (secIdx + 1 < sections.length) {
             BaseChunk above = sections[secIdx + 1];
             if (above == null || above.isEmpty()) return true;
-            int id = getBlockStateId(above, x, 0, z);
-            if (id >= 0 && id < MAX_STATE_ID && transparentTable[id]) return true;
+            if ((getCategory(above.get(x, 0, z)) & CAT_TRANSPARENT) != 0) return true;
         }
 
         return false;
