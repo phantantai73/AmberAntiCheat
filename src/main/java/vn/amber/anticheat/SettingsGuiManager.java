@@ -58,8 +58,8 @@ public class SettingsGuiManager implements Listener {
                 "AntiCheat (PvP, Movement, Freecam)",
                 "he-thong.anticheat",
                 Arrays.asList(
-                        "&7• Bắt Reach, KillAura, Aim-GCD, Velocity.",
-                        "&7• Bắt Timer, Fly, Speed, Scaffold.",
+                        "&7• Bắt Reach, KillAura, Velocity, Invalid-Pitch.",
+                        "&7• Kéo giật lùi Timer, Fly, Speed, Scaffold.",
                         "&7• Chặn Freecam mở rương/đập đặt xuyên tường.",
                         "&8Mức tải: &aSiêu nhẹ (< 0.2ms MSPT)"
                 )
@@ -67,10 +67,10 @@ public class SettingsGuiManager implements Listener {
 
         inv.setItem(11, createSwitchItem(
                 Material.NETHERITE_PICKAXE,
-                "Anti-Xray (1 Mode Tối Ưu)",
+                "Anti-Xray (Overworld & Nether)",
                 "anti-xray.bat",
                 Arrays.asList(
-                        "&7• Biến quặng chôn kín 6 mặt (Y <= 64) thành Đá.",
+                        "&7• Ẩn 100% Ancient Debris & quặng chôn kín.",
                         "&7• Tự mở khóa đúng 6 mặt sát vách khi đào.",
                         "&8Mức tải: &aNhẹ (Chạy trên luồng Netty)"
                 )
@@ -83,7 +83,7 @@ public class SettingsGuiManager implements Listener {
                 Arrays.asList(
                         "&7• Ẩn mô hình 3D người chơi sau tường (> 8m)",
                         "&7  hoặc đứng quá xa (> 64m).",
-                        "&7• Giữ nguyên tên trên bảng Tab + Trễ ẩn 1.5s.",
+                        "&7• Giữ nguyên tên trên bảng Tab + Trễ ẩn 1.2s.",
                         "&8Mức tải: &aNhẹ (Dò tia Async trên BitSet)"
                 )
         ));
@@ -95,7 +95,7 @@ public class SettingsGuiManager implements Listener {
                 Arrays.asList(
                         "&7• Mặc định biến Rương, Shulker, Spawner, Phễu,",
                         "&7  Lò nung, Giường, Đe thành Đá khi tải chunk.",
-                        "&7• Chỉ mở khóa khi <= 24m + không bị tường che.",
+                        "&7• Chỉ mở khóa khi <= 20m + không bị tường che.",
                         "&8Mức tải: &eTrung bình - Nhẹ (Giới hạn 64 khối)"
                 )
         ));
@@ -105,8 +105,8 @@ public class SettingsGuiManager implements Listener {
                 "Phân Tầng Y=35 (2 Chiều) & Khóa Chunk",
                 "hien-tren-an-duoi.bat",
                 Arrays.asList(
-                        "&7• Ở trên Y=35: Ẩn sạch người & base dưới hầm.",
-                        "&7• Ở dưới Y=35: Ẩn sạch người & base mặt đất.",
+                        "&7• Ở trên Y=35: Xóa rỗng toàn bộ hầm thành AIR.",
+                        "&7• Ở dưới Y=35: Xóa rỗng mặt đất thành AIR.",
                         "&7• Khóa tầm nhìn: Mặt đất 6 chunks, Hầm 2 chunks.",
                         "&7• Chặn Shift+F3 Pie-Chart, Âm thanh & Hạt.",
                         "&8Mức tải: &a0.0ms RayTrace (Chạy độc lập)"
@@ -126,12 +126,12 @@ public class SettingsGuiManager implements Listener {
 
         inv.setItem(16, createSwitchItem(
                 Material.TOTEM_OF_UNDYING,
-                "Chế Độ An Toàn (Chống Ban Nhầm)",
+                "Chế Độ An Toàn (Không Tự Kick/Ban)",
                 "chong-ban-nham.che-do-an-toan-khong-ban",
                 Arrays.asList(
-                        "&7• Khi BẬT: Không tự động Ban/Kick,",
-                        "&7  chỉ hủy thao tác hack và lưu vào &e/sus&7.",
-                        "&8Khuyên dùng: &aNên BẬT cho SMP đông người"
+                        "&7• Khi BẬT: Không tự động Ban/Kick ở mốc 30 VL,",
+                        "&7  chỉ kéo giật lùi và lưu vào &e/sus&7.",
+                        "&7• Khi TẮT: Đủ 30 VL tự động Kick & Ban."
                 )
         ));
 
@@ -150,9 +150,9 @@ public class SettingsGuiManager implements Listener {
                 "&b&lTải Lại Cấu Hình (Reload Config)",
                 Arrays.asList(
                         "&7• Đọc lại tệp &fconfig.yml&7 từ ổ cứng.",
-                        "&7• Cập nhật lại bảng mã Block & Chunk.",
+                        "&7• Làm mới toàn bộ Chunk & Thực thể ngay lập tức.",
                         "",
-                        "&e▶ Chạm để nạp lại ngay lập tức!"
+                        "&e▶ Chạm để nạp lại ngay!"
                 )
         ));
 
@@ -193,7 +193,7 @@ public class SettingsGuiManager implements Listener {
                 lore.add(color(line));
             }
             lore.add("");
-            lore.add(color(enabled ? "&e▶ Chạm để &cTẮT &echức năng này" : "&e▶ Chạm để &aBẬT &echức năng này"));
+            lore.add(color(enabled ? "&e▶ Chạm để &cTẮT &evà Reload ngay" : "&e▶ Chạm để &aBẬT &evà Reload ngay"));
 
             meta.setLore(lore);
             meta.addItemFlags(ItemFlag.HIDE_ATTRIBUTES, ItemFlag.HIDE_ENCHANTS);
@@ -224,7 +224,7 @@ public class SettingsGuiManager implements Listener {
         e.setCancelled(true);
 
         if (!(e.getWhoClicked() instanceof Player player)) return;
-        if (!player.hasPermission("amberac.admin")) {
+        if (!player.hasPermission("amberac.admin") && !player.isOp()) {
             player.closeInventory();
             return;
         }
@@ -234,6 +234,7 @@ public class SettingsGuiManager implements Listener {
 
         Inventory topInv = e.getView().getTopInventory();
 
+        // Khi ấn vào bất kỳ nút Bật/Tắt nào -> Lưu file + Tự động Reload toàn bộ Chunk/Module ngay lập tức
         if (slotToConfigPath.containsKey(slot)) {
             String path = slotToConfigPath.get(slot);
             boolean current = plugin.getConfig().getBoolean(path, true);
@@ -241,11 +242,13 @@ public class SettingsGuiManager implements Listener {
 
             plugin.getConfig().set(path, nextState);
             plugin.saveConfig();
-            syncModuleStateImmediately(path, nextState);
+            plugin.reloadPluginConfig();
 
             player.playSound(player.getLocation(),
                     nextState ? Sound.BLOCK_NOTE_BLOCK_PLING : Sound.BLOCK_NOTE_BLOCK_BASS,
                     1.0f, nextState ? 1.5f : 0.8f);
+            player.sendMessage(color("&8[&6&lAmber AntiCheat&8] &fĐã "
+                    + (nextState ? "&a&lBẬT" : "&c&lTẮT") + " &fchức năng &e" + path + " &fvà tự động Reload!"));
             renderItems(topInv);
             return;
         }
@@ -253,7 +256,7 @@ public class SettingsGuiManager implements Listener {
         if (slot == 22) {
             plugin.reloadPluginConfig();
             player.playSound(player.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.2f);
-            player.sendMessage(color("&8[&6&lAmber AntiCheat&8] &aĐã tải lại cấu hình và đồng bộ tầm nhìn thành công!"));
+            player.sendMessage(color("&8[&6&lAmber AntiCheat&8] &aĐã tải lại cấu hình và làm mới Chunk thành công!"));
             renderItems(topInv);
             return;
         }
@@ -268,7 +271,7 @@ public class SettingsGuiManager implements Listener {
 
             plugin.reloadPluginConfig();
             player.playSound(player.getLocation(), Sound.UI_TOAST_CHALLENGE_COMPLETE, 0.8f, 1.2f);
-            player.sendMessage(color("&8[&6&lAmber AntiCheat&8] &aĐã kích hoạt &e&lChế Độ Nhẹ Server&a!"));
+            player.sendMessage(color("&8[&6&lAmber AntiCheat&8] &aĐã kích hoạt &e&lChế Độ Nhẹ Server &avà Reload ngay!"));
             renderItems(topInv);
         }
     }
@@ -277,44 +280,6 @@ public class SettingsGuiManager implements Listener {
     public void onMenuDrag(InventoryDragEvent e) {
         if (e.getView().getTitle().equals(GUI_TITLE)) {
             e.setCancelled(true);
-        }
-    }
-
-    private void syncModuleStateImmediately(String path, boolean enabled) {
-        switch (path) {
-            case "anti-xray.bat" -> {
-                if (plugin.getAntiXrayManager() != null) {
-                    plugin.getAntiXrayManager().reloadStateMappings();
-                }
-            }
-            case "anti-player-esp.bat" -> {
-                if (!enabled && !plugin.getConfig().getBoolean("hien-tren-an-duoi.bat", true)) {
-                    plugin.revealAllHiddenPlayers();
-                }
-            }
-            case "anti-block-esp.bat" -> {
-                if (plugin.getAntiXrayManager() != null) {
-                    plugin.getAntiXrayManager().reloadStateMappings();
-                }
-                if (!enabled && !plugin.getConfig().getBoolean("hien-tren-an-duoi.bat", true)
-                        && plugin.getBlockEspListener() != null) {
-                    plugin.getBlockEspListener().restoreAllHiddenBlocks();
-                }
-            }
-            case "hien-tren-an-duoi.bat" -> {
-                for (Player p : Bukkit.getOnlinePlayers()) {
-                    plugin.applyAllowedChunkRadius(p);
-                }
-                if (!enabled) {
-                    if (!plugin.getConfig().getBoolean("anti-player-esp.bat", true)) {
-                        plugin.revealAllHiddenPlayers();
-                    }
-                    if (!plugin.getConfig().getBoolean("anti-block-esp.bat", true)
-                            && plugin.getBlockEspListener() != null) {
-                        plugin.getBlockEspListener().restoreAllHiddenBlocks();
-                    }
-                }
-            }
         }
     }
 
