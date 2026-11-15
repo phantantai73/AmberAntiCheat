@@ -22,6 +22,7 @@ import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
+import org.bukkit.event.player.PlayerGameModeChangeEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerLoginEvent;
 import org.bukkit.event.player.PlayerMoveEvent;
@@ -132,7 +133,7 @@ public class AmberAntiCheat extends JavaPlugin implements Listener, CommandExecu
 
     /**
      * Chỉ miễn trừ kiểm tra Cheat PvP / Di chuyển cho người có OP, chế độ Sáng Tạo, Khán Giả hoặc quyền bypass.
-     * Lưu ý: Các tính năng Anti-ESP, Anti-Xray, Ẩn Base và Phân tầng Y=35 KHÔNG dùng hàm này (áp dụng cho cả OP và Creative).
+     * Lưu ý: Anti-ESP, Anti-Xray, Ẩn Base và Phân tầng Y=35 vẫn áp dụng cho cả OP và Creative.
      */
     public boolean isExemptFromAnticheat(Player p) {
         if (p == null) return true;
@@ -200,24 +201,38 @@ public class AmberAntiCheat extends JavaPlugin implements Listener, CommandExecu
         violations.remove(uuid);
     }
 
+    /**
+     * Đồng bộ ngay lập tức mọi thay đổi khi bấm nút trong /acsettings hoặc gõ /amberac reload
+     */
     public void reloadPluginConfig() {
         reloadConfig();
+
         if (antiXrayManager != null) {
             antiXrayManager.reloadStateMappings();
         }
+
+        if (!getConfig().getBoolean("he-thong.anticheat", true)) {
+            violations.clear();
+        }
+
+        revealAllHiddenPlayers();
+        if (blockEspListener != null) {
+            blockEspListener.restoreAllHiddenBlocks();
+        }
+
         for (Player p : Bukkit.getOnlinePlayers()) {
+            playerLayerZone.put(p.getUniqueId(), computeZone(p.getLocation().getBlockY()));
             applyAllowedChunkRadius(p);
             refreshChunksAround(p, 4);
         }
-        if (!getConfig().getBoolean("anti-player-esp.bat", true)
-                && !getConfig().getBoolean("hien-tren-an-duoi.bat", true)) {
-            revealAllHiddenPlayers();
-        }
-        if (!getConfig().getBoolean("anti-block-esp.bat", true)
-                && !getConfig().getBoolean("hien-tren-an-duoi.bat", true)
-                && blockEspListener != null) {
-            blockEspListener.restoreAllHiddenBlocks();
-        }
+
+        Bukkit.getScheduler().runTaskLater(this, () -> {
+            if (!getConfig().getBoolean("anti-block-esp.bat", true)
+                    && !getConfig().getBoolean("hien-tren-an-duoi.bat", true)
+                    && blockEspListener != null) {
+                blockEspListener.restoreAllHiddenBlocks();
+            }
+        }, 2L);
     }
 
     public boolean isFullSolidBlock(Material mat) {
@@ -259,6 +274,7 @@ public class AmberAntiCheat extends JavaPlugin implements Listener, CommandExecu
     }
 
     public boolean isHiddenByYLayer(Player viewer, double targetY, boolean isPlayerTarget) {
+        if (viewer != null && viewer.getGameMode() == GameMode.SPECTATOR) return false;
         if (!getConfig().getBoolean("hien-tren-an-duoi.bat", true)) return false;
         if (isPlayerTarget && !getConfig().getBoolean("hien-tren-an-duoi.an-nguoi-choi", true)) return false;
         if (!isPlayerTarget && !getConfig().getBoolean("hien-tren-an-duoi.an-ruong-block", true)) return false;
@@ -271,7 +287,7 @@ public class AmberAntiCheat extends JavaPlugin implements Listener, CommandExecu
     }
 
     public void applyAllowedChunkRadius(Player p) {
-        if (!getConfig().getBoolean("hien-tren-an-duoi.bat", true)) {
+        if (!getConfig().getBoolean("hien-tren-an-duoi.bat", true) || p.getGameMode() == GameMode.SPECTATOR) {
             p.setSendViewDistance(-1);
             return;
         }
@@ -318,8 +334,21 @@ public class AmberAntiCheat extends JavaPlugin implements Listener, CommandExecu
         }
     }
 
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onGameModeChange(PlayerGameModeChangeEvent e) {
+        Player p = e.getPlayer();
+        Bukkit.getScheduler().runTaskLater(this, () -> {
+            if (!p.isOnline()) return;
+            applyAllowedChunkRadius(p);
+            if (blockEspListener != null) {
+                blockEspListener.clearPlayerCache(p.getUniqueId());
+            }
+            refreshChunksAround(p, 4);
+        }, 2L);
+    }
+
     // =========================================================================
-    // ANTI-PLAYER ESP (KHÔNG CHO OP HAY CREATIVE BYPASS)
+    // ANTI-PLAYER ESP (ÁP DỤNG CHO CẢ OP & CREATIVE, CHỈ MIỄN TRỪ SPECTATOR)
     // =========================================================================
     private void runAntiPlayerEspTask() {
         boolean wallEspEnabled = getConfig().getBoolean("anti-player-esp.bat", true);
@@ -341,6 +370,16 @@ public class AmberAntiCheat extends JavaPlugin implements Listener, CommandExecu
         for (Player viewer : players) {
             UUID viewerId = viewer.getUniqueId();
             Set<UUID> hiddenSet = hiddenPlayersMap.computeIfAbsent(viewerId, k -> ConcurrentHashMap.newKeySet());
+
+            if (viewer.getGameMode() == GameMode.SPECTATOR) {
+                for (UUID targetId : new HashSet<>(hiddenSet)) {
+                    Player t = Bukkit.getPlayer(targetId);
+                    if (t != null) showEntityModelOnly(viewer, t);
+                    hiddenSet.remove(targetId);
+                }
+                continue;
+            }
+
             Location eye = viewer.getEyeLocation();
 
             for (Player target : players) {
@@ -429,7 +468,6 @@ public class AmberAntiCheat extends JavaPlugin implements Listener, CommandExecu
     // =========================================================================
     public void flag(Player p, String checkName, String detail) {
         if (!getConfig().getBoolean("he-thong.anticheat", true)) return;
-        // Người có OP hoặc đang ở chế độ Sáng Tạo sẽ không bị thông báo hay Kick/Ban
         if (isExemptFromAnticheat(p)) return;
 
         int maxPing = getConfig().getInt("chong-ban-nham.ping-toi-da-kiem-tra", 280);
@@ -461,7 +499,6 @@ public class AmberAntiCheat extends JavaPlugin implements Listener, CommandExecu
         boolean safeMode = getConfig().getBoolean("chong-ban-nham.che-do-an-toan-khong-ban", false);
         int maxVl = getConfig().getInt("chong-ban-nham.nguong-vi-pham-toi-da", 30);
 
-        // Khi vượt quá 30 VL -> Thực thi Kick / Ban
         if (!safeMode && vl > maxVl) {
             violations.remove(uuid);
             Bukkit.getScheduler().runTask(this, () -> executeEscalatingPunishment(p, checkName, detail));
@@ -481,7 +518,6 @@ public class AmberAntiCheat extends JavaPlugin implements Listener, CommandExecu
         int banDays = getConfig().getInt("chong-ban-nham.ban-theo-ngay", 3);
         long now = System.currentTimeMillis();
 
-        // Lần 1 -> 4: KICK CẢNH CÁO
         if (offenseCount < banThreshold) {
             savePunishmentData();
             String kickScreen = color(serverName + " &8- &c&lHỆ THỐNG CHỐNG GIAN LẬN\n\n"
@@ -500,7 +536,6 @@ public class AmberAntiCheat extends JavaPlugin implements Listener, CommandExecu
             return;
         }
 
-        // Lần 5 trở đi: BAN THEO GIỜ -> THEO NGÀY -> VĨNH VIỄN
         long expireAt;
         String durationLabel;
         String unbanDateText;
@@ -612,7 +647,7 @@ public class AmberAntiCheat extends JavaPlugin implements Listener, CommandExecu
         mainComp.addExtra(btnWatch);
 
         for (Player staff : Bukkit.getOnlinePlayers()) {
-            if (staff.hasPermission("amberac.staff") || staff.hasPermission("amberac.admin")) {
+            if (staff.hasPermission("amberac.staff") || staff.hasPermission("amberac.admin") || staff.isOp()) {
                 staff.spigot().sendMessage(mainComp);
             }
         }
@@ -720,7 +755,7 @@ public class AmberAntiCheat extends JavaPlugin implements Listener, CommandExecu
 
         if (cmdName.equals("acsettings")) {
             if (!(sender instanceof Player p)) return true;
-            if (!p.hasPermission("amberac.admin")) {
+            if (!p.hasPermission("amberac.admin") && !p.isOp()) {
                 p.sendMessage(color("&cBạn không có quyền mở bảng cài đặt Amber AntiCheat!"));
                 return true;
             }
@@ -730,7 +765,7 @@ public class AmberAntiCheat extends JavaPlugin implements Listener, CommandExecu
 
         if (cmdName.equals("sus")) {
             if (!(sender instanceof Player p)) return true;
-            if (!p.hasPermission("amberac.staff") && !p.hasPermission("amberac.admin")) {
+            if (!p.hasPermission("amberac.staff") && !p.hasPermission("amberac.admin") && !p.isOp()) {
                 p.sendMessage(color("&cBạn không có quyền mở danh sách nghi phạm!"));
                 return true;
             }
@@ -740,7 +775,7 @@ public class AmberAntiCheat extends JavaPlugin implements Listener, CommandExecu
 
         if (args.length >= 2 && args[0].equalsIgnoreCase("watch")) {
             if (!(sender instanceof Player staff)) return true;
-            if (!staff.hasPermission("amberac.staff") && !staff.hasPermission("amberac.admin")) return true;
+            if (!staff.hasPermission("amberac.staff") && !staff.hasPermission("amberac.admin") && !staff.isOp()) return true;
             Player target = Bukkit.getPlayerExact(args[1]);
             if (target == null) {
                 staff.sendMessage(color("&8[&6&lAmber AntiCheat&8] &cNgười chơi &e" + args[1] + " &ckhông online!"));
@@ -751,7 +786,7 @@ public class AmberAntiCheat extends JavaPlugin implements Listener, CommandExecu
         }
 
         if (args.length >= 2 && args[0].equalsIgnoreCase("freeze")) {
-            if (!sender.hasPermission("amberac.staff") && !sender.hasPermission("amberac.admin")) return true;
+            if (!sender.hasPermission("amberac.staff") && !sender.hasPermission("amberac.admin") && !sender.isOp()) return true;
             Player target = Bukkit.getPlayerExact(args[1]);
             if (target == null) {
                 sender.sendMessage(color("&8[&6&lAmber AntiCheat&8] &cNgười chơi &e" + args[1] + " &ckhông online!"));
@@ -762,7 +797,7 @@ public class AmberAntiCheat extends JavaPlugin implements Listener, CommandExecu
         }
 
         if (args.length >= 2 && args[0].equalsIgnoreCase("unban")) {
-            if (!sender.hasPermission("amberac.admin")) return true;
+            if (!sender.hasPermission("amberac.admin") && !sender.isOp()) return true;
             String nameKey = args[1].toLowerCase(Locale.ROOT);
             punishmentConfig.set("players." + nameKey + ".banUntil", 0L);
             punishmentConfig.set("players." + nameKey + ".offenses", 0);
@@ -772,12 +807,12 @@ public class AmberAntiCheat extends JavaPlugin implements Listener, CommandExecu
         }
 
         if (args.length >= 1 && args[0].equalsIgnoreCase("reload")) {
-            if (!sender.hasPermission("amberac.admin")) {
+            if (!sender.hasPermission("amberac.admin") && !sender.isOp()) {
                 sender.sendMessage(color("&8[&6&lAmber AntiCheat&8] &cBạn cần quyền &eamberac.admin &cđể nạp lại cấu hình!"));
                 return true;
             }
             reloadPluginConfig();
-            sender.sendMessage(color("&8[&6&lAmber AntiCheat&8] &aĐã nạp lại cấu hình thành công!"));
+            sender.sendMessage(color("&8[&6&lAmber AntiCheat&8] &aĐã nạp lại cấu hình và làm mới Chunk thành công!"));
             return true;
         }
 
@@ -785,9 +820,9 @@ public class AmberAntiCheat extends JavaPlugin implements Listener, CommandExecu
         sender.sendMessage(color(" &6&lAmber AntiCheat &7- &fAMBER SMP (20.0 TPS)"));
         sender.sendMessage(color(" &e/sus &7- Mở bảng danh sách nghi phạm (Đầu Steve)"));
         sender.sendMessage(color(" &e/acsettings &7- Mở bảng bật/tắt 7 Module"));
-        sender.sendMessage(color(" &e/amberac watch <tên> &7- Chuyển Khán Giả + TP"));
-        sender.sendMessage(color(" &e/amberac freeze <tên> &7- Đóng băng / Mở băng kiểm tra"));
-        sender.sendMessage(color(" &e/amberac unban <tên> &7- Mở khóa tài khoản bị Ban"));
+        sender.sendMessage(color(" &e/amberac watch (tên) &7- Chuyển Khán Giả + TP"));
+        sender.sendMessage(color(" &e/amberac freeze (tên) &7- Đóng băng / Mở băng kiểm tra"));
+        sender.sendMessage(color(" &e/amberac unban (tên) &7- Mở khóa tài khoản bị Ban"));
         sender.sendMessage(color(" &e/amberac reload &7- Nạp lại tệp config.yml"));
         sender.sendMessage(color("&8&m----------------------------------------"));
         return true;
@@ -795,13 +830,13 @@ public class AmberAntiCheat extends JavaPlugin implements Listener, CommandExecu
 
     @Override
     public List<String> onTabComplete(CommandSender sender, Command cmd, String alias, String[] args) {
-        if (!sender.hasPermission("amberac.staff") && !sender.hasPermission("amberac.admin")) {
+        if (!sender.hasPermission("amberac.staff") && !sender.hasPermission("amberac.admin") && !sender.isOp()) {
             return Collections.emptyList();
         }
 
         if (args.length == 1) {
             List<String> subCommands = new ArrayList<>(Arrays.asList("watch", "freeze"));
-            if (sender.hasPermission("amberac.admin")) {
+            if (sender.hasPermission("amberac.admin") || sender.isOp()) {
                 subCommands.add("unban");
                 subCommands.add("reload");
             }
