@@ -1,0 +1,32 @@
+name: AmberAntiCheat
+version: '1.0.0'
+main: vn.amber.anticheat.AmberAntiCheat
+api-version: '1.21'
+depend: [packetevents]
+softdepend: [Essentials]
+authors: [AMBER_SMP]
+description: Amber AntiCheat - He thong AntiCheat, Anti-Xray, Anti-ESP, Phan Tang Y & /sus 20 TPS
+
+commands:
+  amberac:
+    aliases: [ac, nvnac]
+    description: Lenh quan tri Amber AntiCheat
+    permission: amberac.staff
+  acsettings:
+    description: Mo bang GUI cai dat 7 Module Amber AntiCheat
+    permission: amberac.admin
+  sus:
+    aliases: [suspects, nghipham]
+    description: Mo bang danh sach nghi pham chuan DonutSMP
+    permission: amberac.staff
+
+permissions:
+  amberac.admin:
+    description: Toan quyen chinh sua cai dat Amber AntiCheat
+    default: op
+  amberac.staff:
+    description: Quyen xem canh bao, dung /sus va /ac watch
+    default: op
+  amberac.bypass:
+    description: Bo qua toan bo kiem tra cua Amber AntiCheat
+    default: false
