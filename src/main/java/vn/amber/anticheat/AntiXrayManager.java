@@ -7,6 +7,7 @@ import com.github.retrooper.packetevents.protocol.world.chunk.TileEntity;
 import com.github.retrooper.packetevents.protocol.world.states.WrappedBlockState;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerChunkData;
 import io.github.retrooper.packetevents.util.SpigotConversionUtil;
+import org.bukkit.GameMode;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.World;
@@ -48,8 +49,6 @@ public class AntiXrayManager implements Listener {
     private volatile int stoneId;
     private volatile int deepslateId;
     private volatile int netherrackId;
-
-    private static final TileEntity[] EMPTY_TILE_ENTITIES = new TileEntity[0];
 
     private static final int[][] ADJACENT_OFFSETS = {
             {1, 0, 0}, {-1, 0, 0},
@@ -154,7 +153,15 @@ public class AntiXrayManager implements Listener {
         return result;
     }
 
+    /**
+     * Tương thích chuẩn 1.21.11: Sửa trực tiếp trên BaseChunk[] và TileEntity[] của Column gốc,
+     * tuyệt đối không tạo Column mới làm mất dữ liệu biomeData / Heightmaps của 1.21.11.
+     */
     public boolean obfuscateChunkPacket(Player player, WrapperPlayServerChunkData wrapper) {
+        if (player != null && player.getGameMode() == GameMode.SPECTATOR) {
+            return false;
+        }
+
         boolean isNether = false;
         int minY = -64;
         if (player != null) {
@@ -179,23 +186,13 @@ public class AntiXrayManager implements Listener {
 
         boolean modified = false;
 
+        // 1. Vô hiệu hóa trực tiếp từng phần tử trong mảng TileEntity[] (Không gọi new Column để tránh lỗi biomeData is null trên 1.21.11)
         if (hideStorageOnChunk || pieChartProtect) {
             TileEntity[] tiles = column.getTileEntities();
             if (tiles != null && tiles.length > 0) {
-                TileEntity dummy = new TileEntity((byte) 0, (short) -2048, 0, new NBTCompound());
-                Arrays.fill(tiles, dummy);
-                try {
-                    Column cleanColumn = new Column(
-                            column.getX(),
-                            column.getZ(),
-                            column.isFullChunk(),
-                            sections,
-                            EMPTY_TILE_ENTITIES,
-                            column.getHeightMaps(),
-                            column.getBiomeDataBytes()
-                    );
-                    wrapper.setColumn(cleanColumn);
-                } catch (Throwable ignored) {
+                TileEntity stripped = new TileEntity((byte) 0, (short) -2048, 0, new NBTCompound());
+                for (int i = 0; i < tiles.length; i++) {
+                    tiles[i] = stripped;
                 }
                 modified = true;
             }
@@ -218,8 +215,9 @@ public class AntiXrayManager implements Listener {
             for (int y = 0; y < 16; y++) {
                 int worldY = sectionBaseY + y;
 
+                // 2. Xóa trắng thành AIR khi khác tầng Y (Đứng trên mặt đất Freecam xuống dưới không load bất kỳ block nào)
                 if (layerEnabled && !isNether) {
-                    if ((viewerZone == 1 && worldY <= splitY - 1) || (viewerZone == -1 && worldY >= splitY + 1)) {
+                    if ((viewerZone == 1 && worldY <= splitY - 5) || (viewerZone == -1 && worldY >= splitY + 5)) {
                         for (int z = 0; z < 16; z++) {
                             for (int x = 0; x < 16; x++) {
                                 section.set(x, y, z, airId);
