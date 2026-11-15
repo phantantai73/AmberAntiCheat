@@ -2,6 +2,7 @@ package vn.amber.anticheat;
 
 import com.github.retrooper.packetevents.protocol.world.chunk.BaseChunk;
 import com.github.retrooper.packetevents.protocol.world.chunk.Column;
+import com.github.retrooper.packetevents.protocol.world.states.WrappedBlockState;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerChunkData;
 import io.github.retrooper.packetevents.util.SpigotConversionUtil;
 import org.bukkit.GameMode;
@@ -110,6 +111,11 @@ public class AntiXrayManager implements Listener {
         }
     }
 
+    private int getBlockStateId(BaseChunk section, int x, int y, int z) {
+        WrappedBlockState state = section.get(x, y, z);
+        return state != null ? state.getGlobalId() : 0;
+    }
+
     public boolean obfuscateChunkPacket(Player player, WrapperPlayServerChunkData wrapper) {
         if (player == null) return false;
         GameMode gm = player.getGameMode();
@@ -160,7 +166,7 @@ public class AntiXrayManager implements Listener {
 
                 for (int z = 0; z < 16; z++) {
                     for (int x = 0; x < 16; x++) {
-                        int currentId = section.get(x, y, z);
+                        int currentId = getBlockStateId(section, x, y, z);
                         if (currentId <= 0 || currentId >= MAX_STATE_ID) continue;
 
                         if ((hideStorageOnChunk || pieChartProtect) && storageBlockTable[currentId]) {
@@ -195,7 +201,7 @@ public class AntiXrayManager implements Listener {
             for (int z = 0; z < 16; z++) {
                 int zOff = yOff | (z << 4);
                 for (int x = 0; x < 16; x++) {
-                    int id = section.get(x, y, z);
+                    int id = getBlockStateId(section, x, y, z);
                     if (id >= 0 && id < MAX_STATE_ID && trans[id]) {
                         int idx = zOff | x;
                         mask[idx >> 6] |= (1L << (idx & 63));
@@ -218,7 +224,7 @@ public class AntiXrayManager implements Listener {
         } else if (secIdx > 0) {
             BaseChunk below = sections[secIdx - 1];
             if (below == null || below.isEmpty()) return true;
-            int id = below.get(x, 15, z);
+            int id = getBlockStateId(below, x, 15, z);
             if (id >= 0 && id < MAX_STATE_ID && transparentTable[id]) return true;
         }
 
@@ -227,7 +233,7 @@ public class AntiXrayManager implements Listener {
         } else if (secIdx + 1 < sections.length) {
             BaseChunk above = sections[secIdx + 1];
             if (above == null || above.isEmpty()) return true;
-            int id = above.get(x, 0, z);
+            int id = getBlockStateId(above, x, 0, z);
             if (id >= 0 && id < MAX_STATE_ID && transparentTable[id]) return true;
         }
 
