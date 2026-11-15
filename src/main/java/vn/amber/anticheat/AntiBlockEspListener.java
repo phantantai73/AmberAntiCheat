@@ -225,8 +225,6 @@ public class AntiBlockEspListener implements Listener {
             return;
         }
 
-        double alwaysRevealDist = Math.max(2.5, plugin.getConfig().getDouble("anti-block-esp.khoang-cach-luon-hien", 2.5));
-        double alwaysRevealDistSq = alwaysRevealDist * alwaysRevealDist;
         long now = System.currentTimeMillis();
 
         for (Player viewer : Bukkit.getOnlinePlayers()) {
@@ -242,7 +240,10 @@ public class AntiBlockEspListener implements Listener {
             Set<BlockPos> revealedSet = revealedBlocksByPlayer.computeIfAbsent(viewerId, k -> ConcurrentHashMap.newKeySet());
             Set<BlockPos> maskedSet = maskedBlocksByPlayer.computeIfAbsent(viewerId, k -> ConcurrentHashMap.newKeySet());
             Location eye = viewer.getEyeLocation();
+            Location feet = viewer.getLocation();
             double eyeX = eye.getX(), eyeY = eye.getY(), eyeZ = eye.getZ();
+            double feetX = feet.getX(), feetZ = feet.getZ();
+            int feetBlockY = feet.getBlockY();
             String worldName = world.getName();
 
             Map<Long, Set<BlockPos>> worldMap = trackedBlocks.get(worldName);
@@ -268,9 +269,13 @@ public class AntiBlockEspListener implements Listener {
                                 continue;
                             }
 
-                            double distSq = Math.pow(eyeX - (pos.x() + 0.5), 2)
-                                    + Math.pow(eyeY - (pos.y() + 0.5), 2)
-                                    + Math.pow(eyeZ - (pos.z() + 0.5), 2);
+                            double centerX = pos.x() + 0.5;
+                            double centerY = pos.y() + 0.5;
+                            double centerZ = pos.z() + 0.5;
+
+                            double distSq = Math.pow(eyeX - centerX, 2)
+                                    + Math.pow(eyeY - centerY, 2)
+                                    + Math.pow(eyeZ - centerZ, 2);
 
                             if (distSq > MAX_REVEAL_DIST_SQ) {
                                 revealedSet.remove(pos);
@@ -288,9 +293,15 @@ public class AntiBlockEspListener implements Listener {
                                 continue;
                             }
 
+                            // Chỉ miễn trừ dò tia khi người chơi ĐỨNG TRỰC TIẾP trên/trong Rương hoặc Hopper (|dx| <= 0.82, |dz| <= 0.82).
+                            // Nếu đứng bên kia bức tường dày 1 ô (khoảng cách ngang >= 1.80m), bắt buộc phải qua kiểm tra RayTrace!
+                            boolean touchingPlayerBody = Math.abs(feetX - centerX) <= 0.82
+                                    && Math.abs(feetZ - centerZ) <= 0.82
+                                    && pos.y() >= feetBlockY - 1
+                                    && pos.y() <= feetBlockY + 1;
+
                             boolean canSee = true;
-                            // Nếu đứng sát cạnh hoặc đứng ngay trên Rương/Hopper (<= 2.5m) -> Luôn hiện để không bị kẹt Hitbox chân và không tốn rayChecks
-                            if (wallBlockEsp && distSq > alwaysRevealDistSq) {
+                            if (wallBlockEsp && !touchingPlayerBody) {
                                 if (rayChecks < MAX_BLOCKS_PER_PLAYER) {
                                     rayChecks++;
                                     canSee = hasLineOfSightToBlock(viewer, block);
