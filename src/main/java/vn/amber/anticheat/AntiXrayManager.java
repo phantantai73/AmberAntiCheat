@@ -154,9 +154,6 @@ public class AntiXrayManager implements Listener {
         return result;
     }
 
-    /**
-     * Áp dụng cho TẤT CẢ người chơi (Bao gồm cả OP và Creative)
-     */
     public boolean obfuscateChunkPacket(Player player, WrapperPlayServerChunkData wrapper) {
         boolean isNether = false;
         int minY = -64;
@@ -185,7 +182,7 @@ public class AntiXrayManager implements Listener {
         if (hideStorageOnChunk || pieChartProtect) {
             TileEntity[] tiles = column.getTileEntities();
             if (tiles != null && tiles.length > 0) {
-                TileEntity dummy = new TileEntity(0, -2048, 0, 0, new NBTCompound());
+                TileEntity dummy = new TileEntity((byte) 0, (short) -2048, 0, new NBTCompound());
                 Arrays.fill(tiles, dummy);
                 try {
                     Column cleanColumn = new Column(
