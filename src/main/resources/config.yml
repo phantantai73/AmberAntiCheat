@@ -6,6 +6,7 @@ he-thong:
   discord-webhook-url: ""
 
 chong-ban-nham:
+  # Đặt false để khi vượt quá 30 VL sẽ tự động Kick (Lần 1-4) và Ban (Lần 5: 6h, Lần 6: 3d, Lần 7+: Vĩnh viễn)
   che-do-an-toan-khong-ban: false
   ping-toi-da-kiem-tra: 280
   tps-toi-thieu-kiem-tra: 17.5
@@ -54,6 +55,20 @@ anti-block-esp:
     - BARREL
     - ENDER_CHEST
     - SPAWNER
+    - TRIAL_SPAWNER
+    - VAULT
+    - HOPPER
+    - FURNACE
+    - BLAST_FURNACE
+    - SMOKER
+    - DISPENSER
+    - DROPPER
+    - BREWING_STAND
+    - BEACON
+    - CRAFTER
+    - ANVIL
+    - CHIPPED_ANVIL
+    - DAMAGED_ANVIL
 
 anti-xray:
   bat: true
@@ -71,14 +86,22 @@ anti-xray:
     - DEEPSLATE_REDSTONE_ORE
     - LAPIS_ORE
     - DEEPSLATE_LAPIS_ORE
+    - COAL_ORE
+    - DEEPSLATE_COAL_ORE
+    - COPPER_ORE
+    - DEEPSLATE_COPPER_ORE
+    - RAW_IRON_BLOCK
+    - RAW_GOLD_BLOCK
+    - RAW_COPPER_BLOCK
   quang-nether:
     - ANCIENT_DEBRIS
     - NETHER_GOLD_ORE
     - NETHER_QUARTZ_ORE
+    - GILDED_BLACKSTONE
 
 checks:
   combat:
-    reach-max: 3.55
-    max-cps: 22
+    reach-max: 3.15
+    max-cps: 20
   movement:
-    timer-max-packets-per-sec: 25
+    timer-max-packets-per-sec: 23
