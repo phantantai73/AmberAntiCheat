@@ -3,6 +3,7 @@ package vn.amber.anticheat;
 import org.bukkit.FluidCollisionMode;
 import org.bukkit.Location;
 import org.bukkit.Material;
+import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.LivingEntity;
@@ -42,6 +43,8 @@ public class CheckListener implements Listener {
     private final Map<UUID, Long> cpsWindowMap = new ConcurrentHashMap<>();
     private final Map<UUID, Integer> cpsCountMap = new ConcurrentHashMap<>();
     private final Map<UUID, Integer> airTicksMap = new ConcurrentHashMap<>();
+    private final Map<UUID, Integer> speedStreakMap = new ConcurrentHashMap<>();
+    private final Map<UUID, Location> lastSafeGroundMap = new ConcurrentHashMap<>();
     private final Map<UUID, Long> lastPlaceTimeMap = new ConcurrentHashMap<>();
     private final Map<UUID, Integer> fastPlaceStreak = new ConcurrentHashMap<>();
     private final Map<UUID, Long> lastMoveTimeMap = new ConcurrentHashMap<>();
@@ -114,6 +117,37 @@ public class CheckListener implements Listener {
         return res != null && res.getHitBlock() != null;
     }
 
+    /**
+     * Kiểm tra thực tế 4 góc chân trên Server (Chống 100% NoFall/Flight Spoof OnGround và không bắt nhầm khi đứng mép block)
+     */
+    private boolean isServerSideNearGround(World world, Location loc) {
+        double x = loc.getX();
+        double y = loc.getY();
+        double z = loc.getZ();
+        double[] offsets = {-0.32, 0.32};
+
+        for (double ox : offsets) {
+            for (double oz : offsets) {
+                int bx = (int) Math.floor(x + ox);
+                int bz = (int) Math.floor(z + oz);
+                int by1 = (int) Math.floor(y - 0.08);
+                int by2 = (int) Math.floor(y - 0.55);
+
+                if (!world.getBlockAt(bx, by1, bz).getType().isAir()
+                        || !world.getBlockAt(bx, by2, bz).getType().isAir()) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private boolean isStandingOnIceOrSlime(World world, Location loc) {
+        Material under = world.getBlockAt(loc.getBlockX(), (int) Math.floor(loc.getY() - 0.6), loc.getBlockZ()).getType();
+        String name = under.name();
+        return name.contains("ICE") || name.equals("SLIME_BLOCK") || name.equals("SOUL_SAND") || name.equals("SOUL_SOIL");
+    }
+
     // =========================================================================
     // 1. KIỂM TRA COMBAT (OP & SÁNG TẠO KHÔNG BỊ PHẠT HAY THÔNG BÁO)
     // =========================================================================
@@ -174,13 +208,14 @@ public class CheckListener implements Listener {
     }
 
     // =========================================================================
-    // 2. KIỂM TRA DI CHUYỂN (OP & SÁNG TẠO KHÔNG BỊ PHẠT HAY THÔNG BÁO)
+    // 2. KIỂM TRA DI CHUYỂN (SIẾT CHẶT SPEED 1.2x+ & CHỐNG FLY SPOOF ONGROUND)
     // =========================================================================
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onPlayerDamaged(EntityDamageEvent e) {
         if (e.getEntity() instanceof Player p) {
             movementGraceTimeMap.put(p.getUniqueId(), System.currentTimeMillis() + 1500L);
             airTicksMap.remove(p.getUniqueId());
+            speedStreakMap.remove(p.getUniqueId());
         }
     }
 
@@ -189,6 +224,7 @@ public class CheckListener implements Listener {
         UUID uuid = e.getPlayer().getUniqueId();
         movementGraceTimeMap.put(uuid, System.currentTimeMillis() + 1200L);
         airTicksMap.remove(uuid);
+        speedStreakMap.remove(uuid);
     }
 
     @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
@@ -214,6 +250,7 @@ public class CheckListener implements Listener {
                 || p.isGliding()
                 || p.isRiptiding()) {
             airTicksMap.remove(uuid);
+            speedStreakMap.remove(uuid);
             movementGraceTimeMap.put(uuid, now + 1200L);
             return;
         }
@@ -222,42 +259,77 @@ public class CheckListener implements Listener {
 
         if (now < movementGraceTimeMap.getOrDefault(uuid, 0L)) {
             airTicksMap.remove(uuid);
+            speedStreakMap.remove(uuid);
             return;
         }
 
         Location from = e.getFrom();
         Location to = e.getTo();
+        World world = p.getWorld();
         double dx = to.getX() - from.getX();
         double dy = to.getY() - from.getY();
         double dz = to.getZ() - from.getZ();
         double horizontalSpeed = Math.sqrt(dx * dx + dz * dz);
 
-        double maxSpeed = 0.72;
-        PotionEffect speedEffect = p.getPotionEffect(PotionEffectType.SPEED);
-        if (speedEffect != null) {
-            maxSpeed += (speedEffect.getAmplifier() + 1) * 0.16;
-        }
-        if (horizontalSpeed > maxSpeed && p.getVelocity().length() < 0.15) {
-            e.setTo(from);
-            plugin.flag(p, "SPEED", String.format("Tốc độ: %.2f", horizontalSpeed));
-            return;
-        }
-
-        Block below = to.clone().subtract(0, 0.55, 0).getBlock();
-        boolean nearGround = !below.getType().isAir()
-                || p.isOnGround()
+        boolean realNearGround = isServerSideNearGround(world, to)
                 || p.isSwimming()
                 || p.isClimbing()
-                || p.hasPotionEffect(PotionEffectType.LEVITATION)
+                || p.isInWater();
+
+        if (realNearGround) {
+            lastSafeGroundMap.put(uuid, from.clone());
+        }
+
+        // 1. Check Speed (Chặn cả nhảy bunny-hop và chạy nhanh trên mặt đất)
+        double limit = (Math.abs(dy) > 0.001) ? 0.46 : 0.39;
+        if (dy > 0.38 && dy < 0.43) {
+            limit = 0.64; // Tick bật nhảy đầu tiên hợp lệ của Vanilla
+        }
+        if (isStandingOnIceOrSlime(world, from) || isStandingOnIceOrSlime(world, to)) {
+            limit += 0.32;
+        }
+        // Nếu có block sát trên đầu (Head-hitter sprint jump)
+        if (!world.getBlockAt(to.getBlockX(), (int) Math.floor(to.getY() + 2.05), to.getBlockZ()).getType().isAir()) {
+            limit += 0.22;
+        }
+        PotionEffect speedEffect = p.getPotionEffect(PotionEffectType.SPEED);
+        if (speedEffect != null) {
+            limit += (speedEffect.getAmplifier() + 1) * 0.14;
+        }
+        if (p.hasPotionEffect(PotionEffectType.DOLPHINS_GRACE)) {
+            limit += 0.35;
+        }
+
+        if (horizontalSpeed > limit) {
+            int streak = (horizontalSpeed > limit + 0.22)
+                    ? speedStreakMap.merge(uuid, 2, Integer::sum)
+                    : speedStreakMap.merge(uuid, 1, Integer::sum);
+            if (streak >= 2) {
+                e.setTo(from);
+                plugin.flag(p, "SPEED", String.format("Tốc độ: %.2f (Giới hạn: %.2f)", horizontalSpeed, limit));
+                return;
+            }
+        } else {
+            speedStreakMap.computeIfPresent(uuid, (k, v) -> v > 0 ? v - 1 : 0);
+        }
+
+        // 2. Check Fly (Không tin vào p.isOnGround() do Client gửi lên)
+        boolean hasLevitationOrSlowFall = p.hasPotionEffect(PotionEffectType.LEVITATION)
                 || p.hasPotionEffect(PotionEffectType.SLOW_FALLING);
 
-        if (!nearGround) {
+        if (!realNearGround && !hasLevitationOrSlowFall) {
             int airTicks = airTicksMap.merge(uuid, 1, Integer::sum);
-            if (airTicks > 16 && dy >= -0.03 && p.getVelocity().getY() <= 0.0) {
-                Location pullback = from.clone();
-                pullback.setY(Math.min(from.getY(), to.getY()) - 0.25);
-                e.setTo(pullback);
-                plugin.flag(p, "FLY", "Lơ lửng trên không (" + airTicks + " ticks)");
+            // Đang trên không > 12 ticks mà vẫn bay ngang (dy >= -0.04) hoặc bay vọt lên (dy > 0)
+            if ((airTicks > 12 && dy >= -0.04) || (airTicks > 6 && dy > 0.12)) {
+                Location safeBack = lastSafeGroundMap.getOrDefault(uuid, from.clone());
+                if (safeBack.getWorld() != null && safeBack.getWorld().equals(world) && safeBack.distanceSquared(to) <= 100.0) {
+                    e.setTo(safeBack);
+                } else {
+                    Location down = from.clone();
+                    down.setY(Math.min(from.getY(), to.getY()) - 0.35);
+                    e.setTo(down);
+                }
+                plugin.flag(p, "FLY", "Bay trên không (" + airTicks + " ticks)");
             }
         } else {
             airTicksMap.remove(uuid);
@@ -444,6 +516,8 @@ public class CheckListener implements Listener {
         cpsWindowMap.remove(uuid);
         cpsCountMap.remove(uuid);
         airTicksMap.remove(uuid);
+        speedStreakMap.remove(uuid);
+        lastSafeGroundMap.remove(uuid);
         lastPlaceTimeMap.remove(uuid);
         fastPlaceStreak.remove(uuid);
         lastMoveTimeMap.remove(uuid);
