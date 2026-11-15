@@ -1,6 +1,6 @@
 package vn.amber.anticheat;
 
-import org.bukkit.GameMode;
+import org.bukkit.FluidCollisionMode;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
@@ -27,6 +27,8 @@ import org.bukkit.event.player.PlayerTeleportEvent;
 import org.bukkit.potion.PotionEffect;
 import org.bukkit.potion.PotionEffectType;
 import org.bukkit.util.BoundingBox;
+import org.bukkit.util.RayTraceResult;
+import org.bukkit.util.Vector;
 
 import java.util.Map;
 import java.util.UUID;
@@ -50,62 +52,87 @@ public class CheckListener implements Listener {
         this.occlusionEngine = occlusionEngine;
     }
 
-    private boolean isWallBetween(Player player, Location targetCenter, double halfWidth, double halfHeight) {
-        if (occlusionEngine == null) return false;
-        Location eye = player.getEyeLocation();
-        double ex = eye.getX(), ey = eye.getY(), ez = eye.getZ();
-        double tx = targetCenter.getX(), ty = targetCenter.getY(), tz = targetCenter.getZ();
-
-        double distSq = Math.pow(ex - tx, 2) + Math.pow(ey - ty, 2) + Math.pow(ez - tz, 2);
-        if (distSq <= 2.25) return false;
-
-        return occlusionEngine.isTargetOccludedAsync(
-                player.getWorld().getName(), ex, ey, ez,
-                tx - halfWidth, ty - halfHeight, tz - halfWidth,
-                tx + halfWidth, ty + halfHeight, tz + halfWidth
-        );
+    private boolean isFreecamPacketFrozen(Player p) {
+        if (p.getPing() > 250) return false;
+        long sinceLastFlying = System.currentTimeMillis() - plugin.getLastFlyingPacketTime(p.getUniqueId());
+        return sinceLastFlying > 1350L;
     }
 
-    private boolean isSensitiveInteractMaterial(Material type) {
-        String name = type.name();
-        return name.contains("CHEST")
-                || name.endsWith("SHULKER_BOX")
-                || name.equals("BARREL")
-                || name.equals("HOPPER")
-                || name.contains("FURNACE")
-                || name.equals("SMOKER")
-                || name.equals("DISPENSER")
-                || name.equals("DROPPER")
-                || name.equals("BREWING_STAND")
-                || name.equals("BEACON")
-                || name.equals("CRAFTER")
-                || name.contains("ANVIL")
-                || name.endsWith("_BUTTON")
-                || name.equals("LEVER")
-                || name.endsWith("_BED")
-                || name.equals("RESPAWN_ANCHOR");
+    private boolean isRealBodyLookingAt(Player p, BoundingBox targetBox, double expandTolerance, double maxDist) {
+        Location eye = p.getEyeLocation();
+        Vector eyeVec = eye.toVector();
+        BoundingBox expanded = targetBox.clone().expand(expandTolerance);
+        if (expanded.contains(eyeVec)) return true;
+
+        RayTraceResult hit = expanded.rayTrace(eyeVec, eye.getDirection(), maxDist);
+        return hit != null;
+    }
+
+    private boolean isBlockedBySolidBlock(Player p, Block targetBlock) {
+        Location eye = p.getEyeLocation();
+        Vector eyeVec = eye.toVector();
+
+        RayTraceResult lookRay = p.getWorld().rayTraceBlocks(eye, eye.getDirection(), 6.0, FluidCollisionMode.NEVER, true);
+        if (lookRay != null && lookRay.getHitBlock() != null && lookRay.getHitBlock().equals(targetBlock)) {
+            return false;
+        }
+
+        double bx = targetBlock.getX();
+        double by = targetBlock.getY();
+        double bz = targetBlock.getZ();
+        double[][] points = {
+                {bx + 0.5, by + 0.5, bz + 0.5},
+                {bx + 0.5, by + 0.85, bz + 0.5},
+                {bx + 0.5, by + 0.15, bz + 0.5},
+                {bx + 0.2, by + 0.5, bz + 0.2},
+                {bx + 0.8, by + 0.5, bz + 0.8}
+        };
+
+        for (double[] pt : points) {
+            Vector targetVec = new Vector(pt[0], pt[1], pt[2]);
+            Vector dir = targetVec.clone().subtract(eyeVec);
+            double dist = dir.length();
+            if (dist < 0.2) return false;
+
+            RayTraceResult res = p.getWorld().rayTraceBlocks(eye, dir.normalize(), dist, FluidCollisionMode.NEVER, true);
+            if (res == null || res.getHitBlock() == null || res.getHitBlock().equals(targetBlock)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean isBlockedToEntity(Player p, Entity target) {
+        Location eye = p.getEyeLocation();
+        BoundingBox box = target.getBoundingBox();
+        Location center = box.getCenter().toLocation(p.getWorld());
+        Vector dir = center.toVector().subtract(eye.toVector());
+        double dist = dir.length();
+        if (dist < 0.5) return false;
+
+        RayTraceResult res = p.getWorld().rayTraceBlocks(eye, dir.normalize(), dist, FluidCollisionMode.NEVER, true);
+        return res != null && res.getHitBlock() != null;
     }
 
     // =========================================================================
-    // 1. KIỂM TRA COMBAT (REACH, CPS/KILLAURA, WALL-HIT)
+    // 1. KIỂM TRA COMBAT (OP & SÁNG TẠO KHÔNG BỊ PHẠT HAY THÔNG BÁO)
     // =========================================================================
     @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
     public void onCombatChecks(EntityDamageByEntityEvent e) {
-        // Chỉ kiểm tra đòn đánh cận chiến trực tiếp (Loại bỏ bắt nhầm Giáp Gai Thorns & Chém lan Sweep)
         if (e.getCause() != EntityDamageEvent.DamageCause.ENTITY_ATTACK) return;
         if (!(e.getDamager() instanceof Player attacker)) return;
-
-        if (attacker.hasPermission("amberac.bypass")
-                || attacker.getGameMode() == GameMode.CREATIVE
-                || attacker.getGameMode() == GameMode.SPECTATOR) {
-            return;
-        }
+        if (plugin.isExemptFromAnticheat(attacker)) return;
 
         Entity target = e.getEntity();
         UUID uuid = attacker.getUniqueId();
         long now = System.currentTimeMillis();
 
-        // 1. CPS / KillAura
+        if (isFreecamPacketFrozen(attacker)) {
+            e.setCancelled(true);
+            plugin.flag(attacker, "FREECAM-PACKET", "Đánh thực thể khi đang đóng băng gói di chuyển (Freecam)");
+            return;
+        }
+
         long start = cpsWindowMap.computeIfAbsent(uuid, k -> now);
         int cps = cpsCountMap.merge(uuid, 1, Integer::sum);
         if (now - start >= 1000L) {
@@ -118,7 +145,6 @@ public class CheckListener implements Listener {
             cpsCountMap.put(uuid, 0);
         }
 
-        // 2. Reach (Tính từ mắt tới cạnh Hitbox gần nhất của mục tiêu)
         BoundingBox box = target.getBoundingBox();
         Location eye = attacker.getEyeLocation();
         double dx = Math.max(box.getMinX() - eye.getX(), Math.max(0, eye.getX() - box.getMaxX()));
@@ -135,20 +161,24 @@ public class CheckListener implements Listener {
             return;
         }
 
-        // 3. Đánh xuyên tường đặc (Wall-Hit / Freecam)
-        if (target instanceof LivingEntity && isWallBetween(attacker, box.getCenter().toLocation(attacker.getWorld()), 0.35, 0.8)) {
+        if (!isRealBodyLookingAt(attacker, box, 0.45, 5.0)) {
             e.setCancelled(true);
-            plugin.flag(attacker, "WALL-HIT", "Đánh xuyên tường đặc");
+            plugin.flag(attacker, "FREECAM-AIM", "Đánh mục tiêu ngoài hướng nhìn xác thật");
+            return;
+        }
+
+        if (target instanceof LivingEntity && !attacker.hasLineOfSight(target) && isBlockedToEntity(attacker, target)) {
+            e.setCancelled(true);
+            plugin.flag(attacker, "WALL-HIT", "Đánh xuyên vật cản");
         }
     }
 
     // =========================================================================
-    // 2. KIỂM TRA DI CHUYỂN (FLY, SPEED, INV-MOVE) & BỘ ĐỆM CHỐNG BẮT NHẦM
+    // 2. KIỂM TRA DI CHUYỂN (OP & SÁNG TẠO KHÔNG BỊ PHẠT HAY THÔNG BÁO)
     // =========================================================================
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onPlayerDamaged(EntityDamageEvent e) {
         if (e.getEntity() instanceof Player p) {
-            // Miễn trừ kiểm tra Speed/Fly trong 1.5s sau khi bị đánh văng / nổ TNT / Wind Charge
             movementGraceTimeMap.put(p.getUniqueId(), System.currentTimeMillis() + 1500L);
             airTicksMap.remove(p.getUniqueId());
         }
@@ -157,7 +187,7 @@ public class CheckListener implements Listener {
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onPlayerTeleport(PlayerTeleportEvent e) {
         UUID uuid = e.getPlayer().getUniqueId();
-        movementGraceTimeMap.put(uuid, System.currentTimeMillis() + 1500L);
+        movementGraceTimeMap.put(uuid, System.currentTimeMillis() + 1200L);
         airTicksMap.remove(uuid);
     }
 
@@ -178,9 +208,7 @@ public class CheckListener implements Listener {
         }
 
         long now = System.currentTimeMillis();
-        if (p.hasPermission("amberac.bypass")
-                || p.getGameMode() == GameMode.CREATIVE
-                || p.getGameMode() == GameMode.SPECTATOR
+        if (plugin.isExemptFromAnticheat(p)
                 || p.getAllowFlight()
                 || p.isInsideVehicle()
                 || p.isGliding()
@@ -192,7 +220,6 @@ public class CheckListener implements Listener {
 
         lastMoveTimeMap.put(uuid, now);
 
-        // Đang trong thời gian miễn trừ sau khi bị đẩy lùi / nổ / dịch chuyển
         if (now < movementGraceTimeMap.getOrDefault(uuid, 0L)) {
             airTicksMap.remove(uuid);
             return;
@@ -205,17 +232,17 @@ public class CheckListener implements Listener {
         double dz = to.getZ() - from.getZ();
         double horizontalSpeed = Math.sqrt(dx * dx + dz * dz);
 
-        // 1. Check Speed
-        double maxSpeed = 0.78;
+        double maxSpeed = 0.72;
         PotionEffect speedEffect = p.getPotionEffect(PotionEffectType.SPEED);
         if (speedEffect != null) {
-            maxSpeed += (speedEffect.getAmplifier() + 1) * 0.18;
+            maxSpeed += (speedEffect.getAmplifier() + 1) * 0.16;
         }
-        if (horizontalSpeed > maxSpeed && p.getVelocity().length() < 0.1) {
+        if (horizontalSpeed > maxSpeed && p.getVelocity().length() < 0.15) {
+            e.setTo(from);
             plugin.flag(p, "SPEED", String.format("Tốc độ: %.2f", horizontalSpeed));
+            return;
         }
 
-        // 2. Check Fly
         Block below = to.clone().subtract(0, 0.55, 0).getBlock();
         boolean nearGround = !below.getType().isAir()
                 || p.isOnGround()
@@ -226,7 +253,10 @@ public class CheckListener implements Listener {
 
         if (!nearGround) {
             int airTicks = airTicksMap.merge(uuid, 1, Integer::sum);
-            if (airTicks > 20 && dy >= -0.02 && p.getVelocity().getY() <= 0.0) {
+            if (airTicks > 16 && dy >= -0.03 && p.getVelocity().getY() <= 0.0) {
+                Location pullback = from.clone();
+                pullback.setY(Math.min(from.getY(), to.getY()) - 0.25);
+                e.setTo(pullback);
                 plugin.flag(p, "FLY", "Lơ lửng trên không (" + airTicks + " ticks)");
             }
         } else {
@@ -237,19 +267,21 @@ public class CheckListener implements Listener {
     @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
     public void onInventoryClickWhileMoving(InventoryClickEvent e) {
         if (!(e.getWhoClicked() instanceof Player p)) return;
-        if (p.hasPermission("amberac.bypass") || p.getGameMode() == GameMode.CREATIVE) return;
+        if (plugin.isExemptFromAnticheat(p)) return;
 
         long now = System.currentTimeMillis();
         if (now < movementGraceTimeMap.getOrDefault(p.getUniqueId(), 0L)) return;
 
         long lastMove = lastMoveTimeMap.getOrDefault(p.getUniqueId(), 0L);
         if (now - lastMove < 50L && p.isSprinting() && !p.isSwimming() && !p.isFlying()) {
+            e.setCancelled(true);
+            p.closeInventory();
             plugin.flag(p, "INV-MOVE", "Thao tác túi đồ khi đang chạy nước rút");
         }
     }
 
     // =========================================================================
-    // 3. CHẶN FREECAM TƯƠNG TÁC XUYÊN TƯỜNG & SCAFFOLD
+    // 3. CHẶN FREECAM TƯƠNG TÁC (OP & SÁNG TẠO ĐƯỢC MIỄN TRỪ THÔNG BÁO/BAN)
     // =========================================================================
     @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
     public void onFreecamInteractBlock(PlayerInteractEvent e) {
@@ -258,22 +290,37 @@ public class CheckListener implements Listener {
         if (b == null) return;
 
         Player p = e.getPlayer();
-        if (p.hasPermission("amberac.bypass") || p.getGameMode() == GameMode.SPECTATOR) return;
+        if (plugin.isExemptFromAnticheat(p)) return;
 
         Material type = b.getType();
-        if (!isSensitiveInteractMaterial(type)) return;
-
-        Location blockCenter = b.getLocation().add(0.5, 0.5, 0.5);
-        double dist = p.getEyeLocation().distance(blockCenter);
-        if (dist > 6.0) {
-            e.setCancelled(true);
-            plugin.flag(p, "FREECAM-REACH", String.format("Mở khối quá xa (%.1fm)", dist));
+        if (!type.isInteractable() && !type.name().contains("CHEST") && !type.name().endsWith("SHULKER_BOX")) {
             return;
         }
 
-        if (isWallBetween(p, blockCenter, 0.45, 0.45)) {
+        if (isFreecamPacketFrozen(p)) {
             e.setCancelled(true);
-            plugin.flag(p, "FREECAM-WALL", "Tương tác " + type.name() + " xuyên tường");
+            plugin.flag(p, "FREECAM-PACKET", "Mở " + type.name() + " khi xác thật ngưng gửi gói vị trí");
+            return;
+        }
+
+        Location blockCenter = b.getLocation().add(0.5, 0.5, 0.5);
+        double dist = p.getEyeLocation().distance(blockCenter);
+        if (dist > 5.8) {
+            e.setCancelled(true);
+            plugin.flag(p, "FREECAM-REACH", String.format("Mở %s quá xa (%.1fm)", type.name(), dist));
+            return;
+        }
+
+        BoundingBox blockBox = BoundingBox.of(b);
+        if (!isRealBodyLookingAt(p, blockBox, 0.35, 6.2)) {
+            e.setCancelled(true);
+            plugin.flag(p, "FREECAM-AIM", "Mở " + type.name() + " lệch góc nhìn xác thật (Freecam)");
+            return;
+        }
+
+        if (isBlockedBySolidBlock(p, b)) {
+            e.setCancelled(true);
+            plugin.flag(p, "FREECAM-WALL", "Mở " + type.name() + " xuyên vật cản");
         }
     }
 
@@ -288,21 +335,31 @@ public class CheckListener implements Listener {
     }
 
     private void checkEntityWallInteraction(Player p, Entity target, Cancellable event) {
-        if (p.hasPermission("amberac.bypass") || p.getGameMode() == GameMode.SPECTATOR) return;
+        if (plugin.isExemptFromAnticheat(p)) return;
+
+        if (isFreecamPacketFrozen(p)) {
+            event.setCancelled(true);
+            plugin.flag(p, "FREECAM-PACKET", "Tương tác thực thể khi đang bật Freecam");
+            return;
+        }
 
         BoundingBox box = target.getBoundingBox();
         Location center = box.getCenter().toLocation(p.getWorld());
         double dist = p.getEyeLocation().distance(center);
 
-        if (dist > 6.0) {
+        if (dist > 5.8) {
             event.setCancelled(true);
-            plugin.flag(p, "FREECAM-ENTITY", String.format("Chuột phải thực thể quá xa (%.1fm)", dist));
+            plugin.flag(p, "FREECAM-ENTITY", String.format("Tương tác thực thể quá xa (%.1fm)", dist));
             return;
         }
 
-        double halfW = Math.max(0.25, box.getWidthX() * 0.45);
-        double halfH = Math.max(0.25, box.getHeight() * 0.45);
-        if (isWallBetween(p, center, halfW, halfH)) {
+        if (!isRealBodyLookingAt(p, box, 0.4, 6.2)) {
+            event.setCancelled(true);
+            plugin.flag(p, "FREECAM-AIM", "Tương tác " + target.getType().name() + " lệch góc nhìn xác thật");
+            return;
+        }
+
+        if (isBlockedToEntity(p, target)) {
             event.setCancelled(true);
             plugin.flag(p, "FREECAM-ENTITY", "Tương tác " + target.getType().name() + " xuyên tường");
         }
@@ -311,22 +368,38 @@ public class CheckListener implements Listener {
     @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
     public void onFreecamBreak(BlockBreakEvent e) {
         Player p = e.getPlayer();
-        if (p.hasPermission("amberac.bypass") || p.getGameMode() == GameMode.SPECTATOR) return;
+        if (plugin.isExemptFromAnticheat(p)) return;
 
-        Location center = e.getBlock().getLocation().add(0.5, 0.5, 0.5);
-        if (p.getEyeLocation().distance(center) > 6.2 || isWallBetween(p, center, 0.45, 0.45)) {
+        Block b = e.getBlock();
+        if (isFreecamPacketFrozen(p)) {
             e.setCancelled(true);
-            plugin.flag(p, "FREECAM-BREAK", "Đập " + e.getBlock().getType().name() + " xuyên tường");
+            plugin.flag(p, "FREECAM-PACKET", "Đập " + b.getType().name() + " khi đang bật Freecam");
+            return;
+        }
+
+        Location center = b.getLocation().add(0.5, 0.5, 0.5);
+        if (p.getEyeLocation().distance(center) > 6.0
+                || !isRealBodyLookingAt(p, BoundingBox.of(b), 0.4, 6.2)
+                || isBlockedBySolidBlock(p, b)) {
+            e.setCancelled(true);
+            plugin.flag(p, "FREECAM-BREAK", "Đập " + b.getType().name() + " bằng Freecam / xuyên tường");
         }
     }
 
     @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
     public void onFreecamPlaceAndScaffold(BlockPlaceEvent e) {
         Player p = e.getPlayer();
-        if (p.hasPermission("amberac.bypass") || p.getGameMode() == GameMode.SPECTATOR) return;
+        if (plugin.isExemptFromAnticheat(p)) return;
 
-        Location againstCenter = e.getBlockAgainst().getLocation().add(0.5, 0.5, 0.5);
-        if (p.getEyeLocation().distance(againstCenter) > 6.5 || isWallBetween(p, againstCenter, 0.48, 0.48)) {
+        if (isFreecamPacketFrozen(p)) {
+            e.setCancelled(true);
+            plugin.flag(p, "FREECAM-PACKET", "Đặt " + e.getBlockPlaced().getType().name() + " khi đang bật Freecam");
+            return;
+        }
+
+        Block against = e.getBlockAgainst();
+        Location againstCenter = against.getLocation().add(0.5, 0.5, 0.5);
+        if (p.getEyeLocation().distance(againstCenter) > 6.2 || isBlockedBySolidBlock(p, against)) {
             e.setCancelled(true);
             plugin.flag(p, "FREECAM-PLACE", "Đặt " + e.getBlockPlaced().getType().name() + " xuyên tường");
             return;
@@ -337,7 +410,7 @@ public class CheckListener implements Listener {
         long diff = now - lastPlaceTimeMap.getOrDefault(uuid, 0L);
         lastPlaceTimeMap.put(uuid, now);
 
-        if (diff < 45L && p.getGameMode() != GameMode.CREATIVE) {
+        if (diff < 45L) {
             int streak = fastPlaceStreak.merge(uuid, 1, Integer::sum);
             if (streak >= 5) {
                 e.setCancelled(true);
@@ -352,12 +425,16 @@ public class CheckListener implements Listener {
     @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
     public void onFreecamBucket(PlayerBucketEmptyEvent e) {
         Player p = e.getPlayer();
-        if (p.hasPermission("amberac.bypass") || p.getGameMode() == GameMode.SPECTATOR) return;
+        if (plugin.isExemptFromAnticheat(p)) return;
 
-        Location center = e.getBlockClicked().getLocation().add(0.5, 0.5, 0.5);
-        if (p.getEyeLocation().distance(center) > 6.2 || isWallBetween(p, center, 0.45, 0.45)) {
+        Block clicked = e.getBlockClicked();
+        Location center = clicked.getLocation().add(0.5, 0.5, 0.5);
+        if (isFreecamPacketFrozen(p)
+                || p.getEyeLocation().distance(center) > 6.0
+                || !isRealBodyLookingAt(p, BoundingBox.of(clicked), 0.4, 6.2)
+                || isBlockedBySolidBlock(p, clicked)) {
             e.setCancelled(true);
-            plugin.flag(p, "FREECAM-BUCKET", "Đổ xô " + e.getBucket().name() + " xuyên tường");
+            plugin.flag(p, "FREECAM-BUCKET", "Đổ xô " + e.getBucket().name() + " bằng Freecam / xuyên tường");
         }
     }
 
