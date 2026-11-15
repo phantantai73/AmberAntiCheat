@@ -10,7 +10,7 @@ description: Amber AntiCheat - He thong AntiCheat, Anti-Xray, Anti-ESP, Phan Tan
 commands:
   amberac:
     aliases: [ac, nvnac]
-    description: Lenh quan tri Amber AntiCheat
+    description: Lenh quan tri Amber AntiCheat (/ac watch, /ac freeze, /ac reload)
     permission: amberac.staff
   acsettings:
     description: Mo bang GUI cai dat 7 Module Amber AntiCheat
@@ -24,8 +24,10 @@ permissions:
   amberac.admin:
     description: Toan quyen chinh sua cai dat Amber AntiCheat
     default: op
+    children:
+      amberac.staff: true
   amberac.staff:
-    description: Quyen xem canh bao, dung /sus va /ac watch
+    description: Quyen xem canh bao, dung /sus, /ac watch va /ac freeze
     default: op
   amberac.bypass:
     description: Bo qua toan bo kiem tra cua Amber AntiCheat
