@@ -2,22 +2,15 @@ package vn.amber.anticheat;
 
 import org.bukkit.Bukkit;
 import org.bukkit.Chunk;
-import org.bukkit.GameMode;
+import org.bukkit.FluidCollisionMode;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockState;
 import org.bukkit.block.data.BlockData;
-import org.bukkit.entity.Allay;
-import org.bukkit.entity.ArmorStand;
-import org.bukkit.entity.Boat;
 import org.bukkit.entity.Entity;
-import org.bukkit.entity.IronGolem;
-import org.bukkit.entity.ItemFrame;
-import org.bukkit.entity.Minecart;
 import org.bukkit.entity.Player;
-import org.bukkit.entity.Villager;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
@@ -28,7 +21,8 @@ import org.bukkit.event.entity.EntityExplodeEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.world.ChunkLoadEvent;
 import org.bukkit.event.world.ChunkUnloadEvent;
-import org.bukkit.util.BoundingBox;
+import org.bukkit.util.RayTraceResult;
+import org.bukkit.util.Vector;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -42,13 +36,15 @@ public class AntiBlockEspListener implements Listener {
 
     private final Map<String, Map<Long, Set<BlockPos>>> trackedBlocks = new ConcurrentHashMap<>();
     private final Map<UUID, Set<BlockPos>> revealedBlocksByPlayer = new ConcurrentHashMap<>();
+    private final Map<UUID, Set<BlockPos>> maskedBlocksByPlayer = new ConcurrentHashMap<>();
     private final Map<String, Long> lastSeenBlockTime = new ConcurrentHashMap<>();
 
+    private final BlockData airData = Material.AIR.createBlockData();
     private final BlockData stoneData = Material.STONE.createBlockData();
     private final BlockData deepslateData = Material.DEEPSLATE.createBlockData();
     private final BlockData netherrackData = Material.NETHERRACK.createBlockData();
 
-    private static final double MAX_REVEAL_DISTANCE = 24.0;
+    private static final double MAX_REVEAL_DISTANCE = 20.0;
     private static final double MAX_REVEAL_DIST_SQ = MAX_REVEAL_DISTANCE * MAX_REVEAL_DISTANCE;
     private static final int MAX_BLOCKS_PER_PLAYER = 64;
 
@@ -64,18 +60,21 @@ public class AntiBlockEspListener implements Listener {
     }
 
     public void startTask() {
-        Bukkit.getScheduler().runTaskTimer(plugin, this::updateBlocksForAll, 20L, 8L);
+        Bukkit.getScheduler().runTaskTimer(plugin, this::updateBlocksForAll, 20L, 6L);
     }
 
     private boolean isTargetMaterial(Material mat) {
         if (mat == null) return false;
         String name = mat.name();
-        if (name.endsWith("SHULKER_BOX") || name.endsWith("_BED") || name.endsWith("_SIGN")) return true;
-        if (name.equals("HOPPER") || name.equals("FURNACE") || name.equals("BLAST_FURNACE")
+        if (name.contains("CHEST") || name.endsWith("SHULKER_BOX") || name.endsWith("_BED") || name.endsWith("_SIGN")) {
+            return true;
+        }
+        if (name.equals("BARREL") || name.equals("SPAWNER") || name.equals("HOPPER")
+                || name.equals("FURNACE") || name.equals("BLAST_FURNACE")
                 || name.equals("SMOKER") || name.equals("DISPENSER") || name.equals("DROPPER")
                 || name.equals("BREWING_STAND") || name.equals("ENCHANTING_TABLE")
-                || name.equals("ANVIL") || name.equals("CHIPPED_ANVIL") || name.equals("DAMAGED_ANVIL")
-                || name.equals("BEACON") || name.equals("CRAFTER") || name.equals("LECTERN")) {
+                || name.contains("ANVIL") || name.equals("BEACON") || name.equals("CRAFTER")
+                || name.equals("LECTERN") || name.equals("DECORATED_POT")) {
             return true;
         }
         List<String> list = plugin.getConfig().getStringList("anti-block-esp.danh-sach-block");
@@ -131,12 +130,12 @@ public class AntiBlockEspListener implements Listener {
         Bukkit.getScheduler().runTaskLater(plugin, () -> {
             if (!isTargetMaterial(b.getType())) return;
             Location loc = b.getLocation();
-            BlockData mask = getMaskData(w, b.getY());
             for (Player p : w.getPlayers()) {
-                if (p.equals(e.getPlayer()) || p.hasPermission("amberac.bypass")) continue;
+                if (p.equals(e.getPlayer())) continue;
                 Set<BlockPos> rev = revealedBlocksByPlayer.get(p.getUniqueId());
                 if (rev == null || !rev.contains(pos)) {
-                    p.sendBlockChange(loc, mask);
+                    boolean diffLayer = plugin.isHiddenByYLayer(p, b.getY(), false);
+                    p.sendBlockChange(loc, diffLayer ? airData : getMaskData(w, b.getY()));
                 }
             }
         }, 1L);
@@ -149,16 +148,12 @@ public class AntiBlockEspListener implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onEntityExplode(EntityExplodeEvent e) {
-        for (Block b : e.blockList()) {
-            removeTrackedBlock(b);
-        }
+        for (Block b : e.blockList()) removeTrackedBlock(b);
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onBlockExplode(BlockExplodeEvent e) {
-        for (Block b : e.blockList()) {
-            removeTrackedBlock(b);
-        }
+        for (Block b : e.blockList()) removeTrackedBlock(b);
     }
 
     private void removeTrackedBlock(Block b) {
@@ -168,31 +163,55 @@ public class AntiBlockEspListener implements Listener {
             if (set != null) {
                 BlockPos pos = new BlockPos(b.getWorld().getName(), b.getX(), b.getY(), b.getZ());
                 set.remove(pos);
-                for (Set<BlockPos> rev : revealedBlocksByPlayer.values()) {
-                    rev.remove(pos);
-                }
+                for (Set<BlockPos> rev : revealedBlocksByPlayer.values()) rev.remove(pos);
+                for (Set<BlockPos> m : maskedBlocksByPlayer.values()) m.remove(pos);
             }
         }
     }
 
     @EventHandler
     public void onQuit(PlayerQuitEvent e) {
-        revealedBlocksByPlayer.remove(e.getPlayer().getUniqueId());
+        UUID uuid = e.getPlayer().getUniqueId();
+        revealedBlocksByPlayer.remove(uuid);
+        maskedBlocksByPlayer.remove(uuid);
     }
 
     public void clearPlayerCache(UUID uuid) {
-        Player p = Bukkit.getPlayer(uuid);
-        Set<BlockPos> rev = revealedBlocksByPlayer.remove(uuid);
-        if (p != null && rev != null) {
-            for (BlockPos pos : rev) {
-                World w = Bukkit.getWorld(pos.world());
-                if (w != null && w.equals(p.getWorld())) {
-                    p.sendBlockChange(new Location(w, pos.x(), pos.y(), pos.z()), getMaskData(w, pos.y()));
-                }
-            }
-        }
+        revealedBlocksByPlayer.remove(uuid);
+        maskedBlocksByPlayer.remove(uuid);
     }
 
+    private boolean hasLineOfSightToBlock(Player viewer, Block targetBlock) {
+        Location eye = viewer.getEyeLocation();
+        Vector eyeVec = eye.toVector();
+        double bx = targetBlock.getX();
+        double by = targetBlock.getY();
+        double bz = targetBlock.getZ();
+
+        double[][] points = {
+                {bx + 0.5, by + 0.5, bz + 0.5},
+                {bx + 0.5, by + 0.85, bz + 0.5},
+                {bx + 0.2, by + 0.5, bz + 0.2},
+                {bx + 0.8, by + 0.5, bz + 0.8}
+        };
+
+        World world = viewer.getWorld();
+        for (double[] pt : points) {
+            Vector dir = new Vector(pt[0] - eyeVec.getX(), pt[1] - eyeVec.getY(), pt[2] - eyeVec.getZ());
+            double dist = dir.length();
+            if (dist < 0.3) return true;
+
+            RayTraceResult hit = world.rayTraceBlocks(eye, dir.normalize(), dist, FluidCollisionMode.NEVER, true);
+            if (hit == null || hit.getHitBlock() == null || hit.getHitBlock().equals(targetBlock)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Áp dụng cho TẤT CẢ người chơi (Bao gồm cả OP và Creative)
+     */
     private void updateBlocksForAll() {
         boolean wallBlockEsp = plugin.getConfig().getBoolean("anti-block-esp.bat", true);
         boolean layerBlockEsp = plugin.getConfig().getBoolean("hien-tren-an-duoi.bat", true)
@@ -203,95 +222,85 @@ public class AntiBlockEspListener implements Listener {
             return;
         }
 
-        double minAlwaysShowDist = plugin.getConfig().getDouble("anti-block-esp.khoang-cach-luon-hien", 2.5);
-        double minShowDistSq = minAlwaysShowDist * minAlwaysShowDist;
         long now = System.currentTimeMillis();
 
         for (Player viewer : Bukkit.getOnlinePlayers()) {
             World world = viewer.getWorld();
             if (world.getEnvironment() == World.Environment.THE_END) continue;
 
-            if (viewer.hasPermission("amberac.bypass")
-                    || viewer.getGameMode() == GameMode.SPECTATOR
-                    || viewer.getGameMode() == GameMode.CREATIVE) {
-                revealNearbyForBypass(viewer);
-                continue;
-            }
-
-            Set<BlockPos> revealedSet = revealedBlocksByPlayer.computeIfAbsent(viewer.getUniqueId(), k -> ConcurrentHashMap.newKeySet());
+            UUID viewerId = viewer.getUniqueId();
+            Set<BlockPos> revealedSet = revealedBlocksByPlayer.computeIfAbsent(viewerId, k -> ConcurrentHashMap.newKeySet());
+            Set<BlockPos> maskedSet = maskedBlocksByPlayer.computeIfAbsent(viewerId, k -> ConcurrentHashMap.newKeySet());
             Location eye = viewer.getEyeLocation();
             double eyeX = eye.getX(), eyeY = eye.getY(), eyeZ = eye.getZ();
             String worldName = world.getName();
-
-            Iterator<BlockPos> it = revealedSet.iterator();
-            while (it.hasNext()) {
-                BlockPos pos = it.next();
-                if (!pos.world().equals(worldName)) {
-                    it.remove();
-                    continue;
-                }
-                double distSq = Math.pow(eyeX - (pos.x() + 0.5), 2)
-                        + Math.pow(eyeY - (pos.y() + 0.5), 2)
-                        + Math.pow(eyeZ - (pos.z() + 0.5), 2);
-
-                boolean differentLayer = layerBlockEsp && plugin.isHiddenByYLayer(viewer, pos.y(), false);
-                if (distSq > MAX_REVEAL_DIST_SQ || differentLayer) {
-                    it.remove();
-                    viewer.sendBlockChange(new Location(world, pos.x(), pos.y(), pos.z()), getMaskData(world, pos.y()));
-                }
-            }
 
             Map<Long, Set<BlockPos>> worldMap = trackedBlocks.get(worldName);
             if (worldMap != null && !worldMap.isEmpty()) {
                 int pChunkX = eye.getBlockX() >> 4;
                 int pChunkZ = eye.getBlockZ() >> 4;
-                int checkedCount = 0;
+                int rayChecks = 0;
 
-                outerLoop:
-                for (int dx = -2; dx <= 2; dx++) {
-                    for (int dz = -2; dz <= 2; dz++) {
+                for (int dx = -4; dx <= 4; dx++) {
+                    for (int dz = -4; dz <= 4; dz++) {
                         Set<BlockPos> blocksInChunk = worldMap.get(getChunkKey(pChunkX + dx, pChunkZ + dz));
                         if (blocksInChunk == null || blocksInChunk.isEmpty()) continue;
 
                         for (BlockPos pos : blocksInChunk) {
+                            Location blockLoc = new Location(world, pos.x(), pos.y(), pos.z());
+                            boolean differentLayer = layerBlockEsp && plugin.isHiddenByYLayer(viewer, pos.y(), false);
+
+                            if (differentLayer) {
+                                revealedSet.remove(pos);
+                                if (maskedSet.add(pos)) {
+                                    viewer.sendBlockChange(blockLoc, airData);
+                                }
+                                continue;
+                            }
+
                             double distSq = Math.pow(eyeX - (pos.x() + 0.5), 2)
                                     + Math.pow(eyeY - (pos.y() + 0.5), 2)
                                     + Math.pow(eyeZ - (pos.z() + 0.5), 2);
 
-                            if (distSq > MAX_REVEAL_DIST_SQ) continue;
-                            if (layerBlockEsp && plugin.isHiddenByYLayer(viewer, pos.y(), false)) continue;
-
-                            if (++checkedCount > MAX_BLOCKS_PER_PLAYER) break outerLoop;
+                            if (distSq > MAX_REVEAL_DIST_SQ) {
+                                revealedSet.remove(pos);
+                                if (maskedSet.add(pos)) {
+                                    viewer.sendBlockChange(blockLoc, getMaskData(world, pos.y()));
+                                }
+                                continue;
+                            }
 
                             Block block = world.getBlockAt(pos.x(), pos.y(), pos.z());
                             if (!isTargetMaterial(block.getType())) {
                                 blocksInChunk.remove(pos);
                                 revealedSet.remove(pos);
+                                maskedSet.remove(pos);
                                 continue;
                             }
 
                             boolean canSee = true;
-                            if (wallBlockEsp && distSq >= minShowDistSq && occlusionEngine != null) {
-                                canSee = !occlusionEngine.isTargetOccludedAsync(
-                                        worldName, eyeX, eyeY, eyeZ,
-                                        pos.x(), pos.y(), pos.z(),
-                                        pos.x() + 1.0, pos.y() + 1.0, pos.z() + 1.0
-                                );
+                            if (wallBlockEsp) {
+                                if (rayChecks < MAX_BLOCKS_PER_PLAYER) {
+                                    rayChecks++;
+                                    canSee = hasLineOfSightToBlock(viewer, block);
+                                } else {
+                                    canSee = false;
+                                }
                             }
 
-                            String timeKey = viewer.getUniqueId() + ":" + pos.x() + "," + pos.y() + "," + pos.z();
-                            Location blockLoc = block.getLocation();
+                            String timeKey = viewerId + ":" + pos.x() + "," + pos.y() + "," + pos.z();
 
                             if (canSee) {
                                 lastSeenBlockTime.put(timeKey, now);
+                                maskedSet.remove(pos);
                                 if (revealedSet.add(pos)) {
                                     viewer.sendBlockChange(blockLoc, block.getBlockData());
                                 }
                             } else {
-                                if (revealedSet.contains(pos)) {
-                                    long lastSeen = lastSeenBlockTime.getOrDefault(timeKey, 0L);
-                                    if (now - lastSeen >= 1500L) {
-                                        revealedSet.remove(pos);
+                                long lastSeen = lastSeenBlockTime.getOrDefault(timeKey, 0L);
+                                if (!revealedSet.contains(pos) || (now - lastSeen >= 1000L)) {
+                                    revealedSet.remove(pos);
+                                    if (maskedSet.add(pos)) {
                                         viewer.sendBlockChange(blockLoc, getMaskData(world, pos.y()));
                                     }
                                 }
@@ -305,29 +314,19 @@ public class AntiBlockEspListener implements Listener {
         }
     }
 
-    private boolean isBaseEntity(Entity entity) {
-        return entity instanceof Villager
-                || entity instanceof ItemFrame
-                || entity instanceof ArmorStand
-                || entity instanceof Minecart
-                || entity instanceof IronGolem
-                || entity instanceof Allay
-                || entity instanceof Boat;
-    }
-
     private void updateBaseEntitiesForViewer(Player viewer, boolean wallEsp, boolean layerEsp) {
         World world = viewer.getWorld();
         Location eye = viewer.getEyeLocation();
         int pChunkX = eye.getBlockX() >> 4;
         int pChunkZ = eye.getBlockZ() >> 4;
 
-        for (int dx = -2; dx <= 2; dx++) {
-            for (int dz = -2; dz <= 2; dz++) {
+        for (int dx = -5; dx <= 5; dx++) {
+            for (int dz = -5; dz <= 5; dz++) {
                 if (!world.isChunkLoaded(pChunkX + dx, pChunkZ + dz)) continue;
                 Chunk chunk = world.getChunkAt(pChunkX + dx, pChunkZ + dz);
 
                 for (Entity ent : chunk.getEntities()) {
-                    if (!isBaseEntity(ent)) continue;
+                    if (ent instanceof Player) continue;
 
                     Location entLoc = ent.getLocation();
                     boolean shouldHide = false;
@@ -338,13 +337,8 @@ public class AntiBlockEspListener implements Listener {
                         double distSq = eye.distanceSquared(entLoc);
                         if (distSq > MAX_REVEAL_DIST_SQ) {
                             shouldHide = true;
-                        } else if (distSq > 16.0 && occlusionEngine != null) {
-                            BoundingBox box = ent.getBoundingBox();
-                            shouldHide = occlusionEngine.isTargetOccludedAsync(
-                                    world.getName(), eye.getX(), eye.getY(), eye.getZ(),
-                                    box.getMinX(), box.getMinY(), box.getMinZ(),
-                                    box.getMaxX(), box.getMaxY(), box.getMaxZ()
-                            );
+                        } else if (distSq > 9.0 && !viewer.hasLineOfSight(ent)) {
+                            shouldHide = true;
                         }
                     }
 
@@ -365,9 +359,10 @@ public class AntiBlockEspListener implements Listener {
 
         Map<Long, Set<BlockPos>> worldMap = trackedBlocks.get(world.getName());
         Set<BlockPos> rev = revealedBlocksByPlayer.computeIfAbsent(viewer.getUniqueId(), k -> ConcurrentHashMap.newKeySet());
+        maskedBlocksByPlayer.remove(viewer.getUniqueId());
 
-        for (int dx = -2; dx <= 2; dx++) {
-            for (int dz = -2; dz <= 2; dz++) {
+        for (int dx = -4; dx <= 4; dx++) {
+            for (int dz = -4; dz <= 4; dz++) {
                 if (worldMap != null) {
                     Set<BlockPos> set = worldMap.get(getChunkKey(cx + dx, cz + dz));
                     if (set != null) {
@@ -382,7 +377,7 @@ public class AntiBlockEspListener implements Listener {
                 if (world.isChunkLoaded(cx + dx, cz + dz)) {
                     Chunk chunk = world.getChunkAt(cx + dx, cz + dz);
                     for (Entity ent : chunk.getEntities()) {
-                        if (isBaseEntity(ent)) {
+                        if (!(ent instanceof Player)) {
                             viewer.showEntity(plugin, ent);
                         }
                     }
@@ -401,6 +396,7 @@ public class AntiBlockEspListener implements Listener {
             revealNearbyForBypass(p);
         }
         revealedBlocksByPlayer.clear();
+        maskedBlocksByPlayer.clear();
         lastSeenBlockTime.clear();
     }
 }
