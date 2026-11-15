@@ -51,7 +51,7 @@ public class AntiBlockEspListener implements Listener {
 
     private static final double MAX_REVEAL_DISTANCE = 20.0;
     private static final double MAX_REVEAL_DIST_SQ = MAX_REVEAL_DISTANCE * MAX_REVEAL_DISTANCE;
-    private static final int MAX_BLOCKS_PER_PLAYER = 64;
+    private static final int MAX_BLOCKS_PER_PLAYER = 200;
 
     public AntiBlockEspListener(AmberAntiCheat plugin, AsyncOcclusionEngine occlusionEngine) {
         this.plugin = plugin;
@@ -205,7 +205,7 @@ public class AntiBlockEspListener implements Listener {
         for (double[] pt : points) {
             Vector dir = new Vector(pt[0] - eyeVec.getX(), pt[1] - eyeVec.getY(), pt[2] - eyeVec.getZ());
             double dist = dir.length();
-            if (dist < 0.3) return true;
+            if (dist < 0.35) return true;
 
             RayTraceResult hit = world.rayTraceBlocks(eye, dir.normalize(), dist, FluidCollisionMode.NEVER, true);
             if (hit == null || hit.getHitBlock() == null || hit.getHitBlock().equals(targetBlock)) {
@@ -225,6 +225,8 @@ public class AntiBlockEspListener implements Listener {
             return;
         }
 
+        double alwaysRevealDist = Math.max(2.5, plugin.getConfig().getDouble("anti-block-esp.khoang-cach-luon-hien", 2.5));
+        double alwaysRevealDistSq = alwaysRevealDist * alwaysRevealDist;
         long now = System.currentTimeMillis();
 
         for (Player viewer : Bukkit.getOnlinePlayers()) {
@@ -243,7 +245,6 @@ public class AntiBlockEspListener implements Listener {
             double eyeX = eye.getX(), eyeY = eye.getY(), eyeZ = eye.getZ();
             String worldName = world.getName();
 
-            // 1. RƯƠNG, SPAWNER, SHULKER, PHỄU...: Ẩn cả khi ở xa (> 20m) LẪN khi khuất sau tường
             Map<Long, Set<BlockPos>> worldMap = trackedBlocks.get(worldName);
             if (worldMap != null && !worldMap.isEmpty()) {
                 int pChunkX = eye.getBlockX() >> 4;
@@ -288,12 +289,13 @@ public class AntiBlockEspListener implements Listener {
                             }
 
                             boolean canSee = true;
-                            if (wallBlockEsp) {
+                            // Nếu đứng sát cạnh hoặc đứng ngay trên Rương/Hopper (<= 2.5m) -> Luôn hiện để không bị kẹt Hitbox chân và không tốn rayChecks
+                            if (wallBlockEsp && distSq > alwaysRevealDistSq) {
                                 if (rayChecks < MAX_BLOCKS_PER_PLAYER) {
                                     rayChecks++;
                                     canSee = hasLineOfSightToBlock(viewer, block);
                                 } else {
-                                    canSee = false;
+                                    canSee = revealedSet.contains(pos);
                                 }
                             }
 
@@ -319,15 +321,10 @@ public class AntiBlockEspListener implements Listener {
                 }
             }
 
-            // 2. CẬP NHẬT THỰC THỂ (Tách riêng Item Drop không ẩn sau tường)
             updateBaseEntitiesForViewer(viewer, wallBlockEsp, layerBlockEsp);
         }
     }
 
-    /**
-     * - Nếu là ITEM DROP (ent instanceof Item): KHÔNG ẩn sau block, chỉ ẩn khi đi ra xa (> 20m) hoặc khác tầng Y=35. Lại gần là hiện!
-     * - Các thực thể khác (ArmorStand, ItemFrame, Xe mỏ, Quái...): Vẫn ẩn cả sau tường lẫn khi ở xa.
-     */
     private void updateBaseEntitiesForViewer(Player viewer, boolean wallEsp, boolean layerEsp) {
         World world = viewer.getWorld();
         Location eye = viewer.getEyeLocation();
@@ -350,10 +347,8 @@ public class AntiBlockEspListener implements Listener {
                     } else if (wallEsp) {
                         double distSq = eye.distanceSquared(entLoc);
                         if (distSq > MAX_REVEAL_DIST_SQ) {
-                            // Ở xa (> 20m): Ẩn tất cả (bao gồm cả Item Drop)
                             shouldHide = true;
                         } else if (!(ent instanceof Item) && distSq > 9.0 && !viewer.hasLineOfSight(ent)) {
-                            // Ở gần (<= 20m) nhưng khuất sau tường: Chỉ ẩn Thực thể khác, KHÔNG ẩn Item Drop!
                             shouldHide = true;
                         }
                     }
