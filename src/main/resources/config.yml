@@ -1,15 +1,18 @@
 he-thong:
+  ten-server: "&6&lAMBER SMP"
   anticheat: true
   thong-bao-staff: true
   luu-file-log: true
   discord-webhook-url: ""
 
 chong-ban-nham:
-  che-do-an-toan-khong-ban: true
+  che-do-an-toan-khong-ban: false
   ping-toi-da-kiem-tra: 280
   tps-toi-thieu-kiem-tra: 17.5
-  nguong-vi-pham-toi-da: 25
-  lenh-xu-phat: "kick %player% [Amber AntiCheat] Phat hien hanh vi gian lan (%check%)"
+  nguong-vi-pham-toi-da: 30
+  so-lan-tai-pham-ban: 5
+  ban-theo-gio: 6
+  ban-theo-ngay: 3
 
 kiem-tra-client:
   bat: true
@@ -78,4 +81,4 @@ checks:
     reach-max: 3.55
     max-cps: 22
   movement:
-    timer-max-packets-per-sec: 26
+    timer-max-packets-per-sec: 25
