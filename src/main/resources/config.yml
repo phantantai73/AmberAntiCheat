@@ -1,0 +1,81 @@
+he-thong:
+  anticheat: true
+  thong-bao-staff: true
+  luu-file-log: true
+  discord-webhook-url: ""
+
+chong-ban-nham:
+  che-do-an-toan-khong-ban: true
+  ping-toi-da-kiem-tra: 280
+  tps-toi-thieu-kiem-tra: 17.5
+  nguong-vi-pham-toi-da: 25
+  lenh-xu-phat: "kick %player% [Amber AntiCheat] Phat hien hanh vi gian lan (%check%)"
+
+kiem-tra-client:
+  bat: true
+  tu-dong-kick: false
+  danh-sach-cam:
+    - "meteor"
+    - "wurst"
+    - "aristois"
+    - "inertia"
+    - "impact"
+    - "future"
+    - "rusherhack"
+    - "mio"
+    - "doomsday"
+    - "bleachhack"
+
+hien-tren-an-duoi:
+  bat: true
+  moc-do-cao-y: 35
+  do-tre-do-cao-y: 2
+  chunk-cho-phep-tren-mat-dat: 6
+  chunk-cho-phep-duoi-ham: 2
+  an-nguoi-choi: true
+  an-ruong-block: true
+  chong-pie-chart-f3: true
+  chan-am-thanh-khac-tang: true
+
+anti-player-esp:
+  bat: true
+  khoang-cach-toi-da: 64.0
+  khoang-cach-xuyen-tuong: 8.0
+
+anti-block-esp:
+  bat: true
+  khoang-cach-luon-hien: 2.5
+  danh-sach-block:
+    - CHEST
+    - TRAPPED_CHEST
+    - BARREL
+    - ENDER_CHEST
+    - SPAWNER
+
+anti-xray:
+  bat: true
+  do-cao-quet-toi-da: 64
+  quang-overworld:
+    - DIAMOND_ORE
+    - DEEPSLATE_DIAMOND_ORE
+    - EMERALD_ORE
+    - DEEPSLATE_EMERALD_ORE
+    - GOLD_ORE
+    - DEEPSLATE_GOLD_ORE
+    - IRON_ORE
+    - DEEPSLATE_IRON_ORE
+    - REDSTONE_ORE
+    - DEEPSLATE_REDSTONE_ORE
+    - LAPIS_ORE
+    - DEEPSLATE_LAPIS_ORE
+  quang-nether:
+    - ANCIENT_DEBRIS
+    - NETHER_GOLD_ORE
+    - NETHER_QUARTZ_ORE
+
+checks:
+  combat:
+    reach-max: 3.55
+    max-cps: 22
+  movement:
+    timer-max-packets-per-sec: 26
